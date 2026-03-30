@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+ab40c9f83dd116203b48929caa4d586af9ce9d61")]
 [assembly: System.Reflection.AssemblyProductAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -48,6 +48,34 @@ public class PostgresService
         return databases;
     }
 
+    public async Task<List<string>> GetPrimaryKeysAsync(string dbName, string tableName)
+    {
+        var pks = new List<string>();
+        await using var conn = new NpgsqlConnection(_config.GetConnectionString());
+        await conn.OpenAsync();
+
+        var sql = @"
+            SELECT a.attname
+            FROM   pg_index i
+            JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+            WHERE  i.indrelid = CAST('public.' || quote_ident($1) AS regclass) AND i.indisprimary;";
+
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(tableName);
+        
+        try
+        {
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                pks.Add(reader.GetString(0));
+            }
+        }
+        catch { }
+
+        return pks;
+    }
+
     public async Task<List<string>> GetTablesAsync()
     {
         var tables = new List<string>();
@@ -62,6 +90,14 @@ public class PostgresService
         }
 
         return tables;
+    }
+
+    public async Task<long> GetTableRowCountAsync(string tableName)
+    {
+        await using var conn = new NpgsqlConnection(_config.GetConnectionString());
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand($"SELECT COUNT(*) FROM public.\"{tableName}\"", conn);
+        return (long)(await cmd.ExecuteScalarAsync() ?? 0L);
     }
 
     public async Task BackupDatabaseAsync(string outputPath)
@@ -140,7 +176,7 @@ public class PostgresService
     {
         await using var conn = new NpgsqlConnection(_config.GetConnectionString());
         await conn.OpenAsync();
-        var sql = $"DELETE FROM public.{tableName} WHERE {pkColumn} = @pkValue";
+        var sql = $"DELETE FROM public.\"{tableName}\" WHERE \"{pkColumn}\" = @pkValue";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("pkValue", pkValue);
         await cmd.ExecuteNonQueryAsync();
@@ -197,7 +233,7 @@ public class PostgresService
 
             foreach (var col in tc.Value)
             {
-                var searchSql = $"SELECT {pkColumn}, {col} FROM public.{table} WHERE {col} ILIKE @kw LIMIT 50";
+                var searchSql = $"SELECT \"{pkColumn}\", \"{col}\" FROM public.\"{table}\" WHERE \"{col}\" ILIKE @kw LIMIT 50";
                 await using var searchCmd = new NpgsqlCommand(searchSql, conn);
                 searchCmd.Parameters.AddWithValue("kw", keyword);
                 

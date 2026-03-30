@@ -69,7 +69,7 @@ public class DatabaseCompareService
         {
             var cols = newCols.Where(c => c.TableName == table).ToList();
             var targetDdl = new StringBuilder();
-            targetDdl.AppendLine($"CREATE TABLE public.{table} (");
+            targetDdl.AppendLine($"CREATE TABLE public.\"{table}\" (");
             var colDefs = cols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}");
             targetDdl.AppendLine(string.Join(",\n", colDefs));
             targetDdl.AppendLine(");");
@@ -90,7 +90,7 @@ public class DatabaseCompareService
         {
             var cols = oldCols.Where(c => c.TableName == table).ToList();
             var sourceDdl = new StringBuilder();
-            sourceDdl.AppendLine($"CREATE TABLE public.{table} (");
+            sourceDdl.AppendLine($"CREATE TABLE public.\"{table}\" (");
             var colDefs = cols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}");
             sourceDdl.AppendLine(string.Join(",\n", colDefs));
             sourceDdl.AppendLine(");");
@@ -101,7 +101,7 @@ public class DatabaseCompareService
                 DiffType = "Removed",
                 SourceDDL = sourceDdl.ToString(),
                 TargetDDL = "-- Table removed in Target",
-                DiffScript = $"DROP TABLE IF EXISTS public.{table} CASCADE;"
+                DiffScript = $"DROP TABLE IF EXISTS public.\"{table}\" CASCADE;"
             });
         }
 
@@ -112,12 +112,12 @@ public class DatabaseCompareService
             var oldTableCols = oldCols.Where(c => c.TableName == table).ToList();
             var newTableCols = newCols.Where(c => c.TableName == table).ToList();
 
-            var sd = new StringBuilder($"CREATE TABLE public.{table} (\n");
-            sd.AppendLine(string.Join(",\n", oldTableCols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
+            var sd = new StringBuilder($"CREATE TABLE public.\"{table}\" (\n");
+            sd.AppendLine(string.Join(",\n", oldTableCols.Select(c => $"    \"{c.ColumnName}\" {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
             sd.AppendLine(");");
 
-            var td = new StringBuilder($"CREATE TABLE public.{table} (\n");
-            td.AppendLine(string.Join(",\n", newTableCols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
+            var td = new StringBuilder($"CREATE TABLE public.\"{table}\" (\n");
+            td.AppendLine(string.Join(",\n", newTableCols.Select(c => $"    \"{c.ColumnName}\" {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
             td.AppendLine(");");
 
             var diff = new StringBuilder();
@@ -129,13 +129,13 @@ public class DatabaseCompareService
             foreach (var colName in addedColNames)
             {
                 var col = newTableCols.First(c => c.ColumnName == colName);
-                diff.AppendLine($"ALTER TABLE public.{table} ADD COLUMN {col.ColumnName} {col.DataType}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
+                diff.AppendLine($"ALTER TABLE public.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {col.DataType}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
             }
 
             var removedColNames = oldColNames.Except(newColNames);
             foreach (var colName in removedColNames)
             {
-                diff.AppendLine($"ALTER TABLE public.{table} DROP COLUMN {colName};");
+                diff.AppendLine($"ALTER TABLE public.\"{table}\" DROP COLUMN \"{colName}\";");
             }
 
             var commonColNames = oldColNames.Intersect(newColNames);
@@ -145,19 +145,19 @@ public class DatabaseCompareService
                 var newCol = newTableCols.First(c => c.ColumnName == colName);
 
                 if (oldCol.DataType != newCol.DataType || oldCol.CharacterMaximumLength != newCol.CharacterMaximumLength)
-                    diff.AppendLine($"ALTER TABLE public.{table} ALTER COLUMN {colName} TYPE {newCol.DataType}{(newCol.CharacterMaximumLength != null ? $"({newCol.CharacterMaximumLength})" : "")};");
+                    diff.AppendLine($"ALTER TABLE public.\"{table}\" ALTER COLUMN \"{colName}\" TYPE {newCol.DataType}{(newCol.CharacterMaximumLength != null ? $"({newCol.CharacterMaximumLength})" : "")};");
 
                 if (oldCol.IsNullable == "YES" && newCol.IsNullable == "NO")
-                    diff.AppendLine($"ALTER TABLE public.{table} ALTER COLUMN {colName} SET NOT NULL;");
+                    diff.AppendLine($"ALTER TABLE public.\"{table}\" ALTER COLUMN \"{colName}\" SET NOT NULL;");
                 else if (oldCol.IsNullable == "NO" && newCol.IsNullable == "YES")
-                    diff.AppendLine($"ALTER TABLE public.{table} ALTER COLUMN {colName} DROP NOT NULL;");
+                    diff.AppendLine($"ALTER TABLE public.\"{table}\" ALTER COLUMN \"{colName}\" DROP NOT NULL;");
 
                 if (oldCol.ColumnDefault != newCol.ColumnDefault)
                 {
                     if (string.IsNullOrEmpty(newCol.ColumnDefault))
-                        diff.AppendLine($"ALTER TABLE public.{table} ALTER COLUMN {colName} DROP DEFAULT;");
+                        diff.AppendLine($"ALTER TABLE public.\"{table}\" ALTER COLUMN \"{colName}\" DROP DEFAULT;");
                     else
-                        diff.AppendLine($"ALTER TABLE public.{table} ALTER COLUMN {colName} SET DEFAULT {newCol.ColumnDefault};");
+                        diff.AppendLine($"ALTER TABLE public.\"{table}\" ALTER COLUMN \"{colName}\" SET DEFAULT {newCol.ColumnDefault};");
                 }
             }
 
@@ -281,7 +281,7 @@ public class DatabaseCompareService
                     var row = newData[key];
                     var colNames = string.Join(", ", row.Keys);
                     var colVals = string.Join(", ", row.Values.Select(FormatSqlValue));
-                    sb.AppendLine($"INSERT INTO public.{table} ({colNames}) VALUES ({colVals});");
+                    sb.AppendLine($"INSERT INTO public.\"{table}\" ({colNames}) VALUES ({colVals});");
                 }
             }
 
@@ -292,7 +292,7 @@ public class DatabaseCompareService
                 foreach (var key in deletedKeys)
                 {
                     var conditions = string.Join(" AND ", pks.Select(pk => $"{pk} = {FormatSqlValue(oldData[key][pk])}"));
-                    sb.AppendLine($"DELETE FROM public.{table} WHERE {conditions};");
+                    sb.AppendLine($"DELETE FROM public.\"{table}\" WHERE {conditions};");
                 }
             }
 
@@ -318,7 +318,7 @@ public class DatabaseCompareService
                 if (updates.Any())
                 {
                     var conditions = string.Join(" AND ", pks.Select(pk => $"{pk} = {FormatSqlValue(oldRow[pk])}"));
-                    sb.AppendLine($"UPDATE public.{table} SET {string.Join(", ", updates)} WHERE {conditions};");
+                    sb.AppendLine($"UPDATE public.\"{table}\" SET {string.Join(", ", updates)} WHERE {conditions};");
                 }
             }
             if (insertedKeys.Any() || deletedKeys.Any() || commonKeys.Any(k => GetUpdatesForCommonKey(oldData[k], newData[k]).Any()))
@@ -404,18 +404,43 @@ public class DatabaseCompareService
 
     private List<string> GetUpdatesForCommonKey(Dictionary<string, object> oldRow, Dictionary<string, object> newRow)
     {
-         var updates = new List<string>();
-         foreach (var col in newRow.Keys)
-         {
-             if (oldRow.ContainsKey(col) && !Equals(oldRow[col], newRow[col]) && !(oldRow[col] is DBNull && newRow[col] is DBNull))
-             {
-                 if (oldRow[col] is DBNull || newRow[col] is DBNull || oldRow[col].ToString() != newRow[col].ToString())
-                 {
-                     updates.Add(col);
-                 }
-             }
-         }
-         return updates;
+        var updates = new List<string>();
+        foreach (var col in newRow.Keys)
+        {
+            if (!oldRow.ContainsKey(col)) continue;
+
+            var v1 = oldRow[col];
+            var v2 = newRow[col];
+
+            if (v1 == null && v2 == null) continue;
+            if (v1 == null || v2 == null || v1 is DBNull || v2 is DBNull)
+            {
+                if (!(v1 is DBNull && v2 is DBNull) && v1 != v2)
+                    updates.Add(col);
+                continue;
+            }
+
+            // Primitive equality check
+            if (Equals(v1, v2)) continue;
+
+            // Specialized checks
+            if (v1 is byte[] b1 && v2 is byte[] b2)
+            {
+                if (!b1.SequenceEqual(b2)) updates.Add(col);
+            }
+            else if (v1 is DateTime dt1 && v2 is DateTime dt2)
+            {
+                // Compare with millisecond precision
+                if (Math.Abs((dt1 - dt2).TotalMilliseconds) > 1) updates.Add(col);
+            }
+            else
+            {
+                // Fallback to string comparison for things like Guid, etc.
+                if (Convert.ToString(v1) != Convert.ToString(v2))
+                    updates.Add(col);
+            }
+        }
+        return updates;
     }
 
     private string FormatSqlValue(object value)
@@ -466,7 +491,7 @@ public class DatabaseCompareService
             SELECT a.attname
             FROM   pg_index i
             JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE  i.indrelid = $1::regclass AND i.indisprimary;";
+            WHERE  i.indrelid = CAST('public.' || quote_ident($1) AS regclass) AND i.indisprimary;";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(tableName);
@@ -495,10 +520,11 @@ public class DatabaseCompareService
             await using var conn = new NpgsqlConnection(config.GetConnectionString());
             await conn.OpenAsync();
 
-            var sql = $"SELECT * FROM public.{tableName}"; // Assume table exists
+            var sql = $"SELECT * FROM public.\"{tableName}\""; // Assume table exists
             await using var cmd = new NpgsqlCommand(sql, conn);
             await using var reader = await cmd.ExecuteReaderAsync();
             
+            var keyCounts = new Dictionary<string, int>();
             while (await reader.ReadAsync())
             {
                 var rowData = new Dictionary<string, object>();
@@ -507,11 +533,16 @@ public class DatabaseCompareService
                     rowData[reader.GetName(i)] = reader.GetValue(i);
                 }
 
-                // Create a unique key string based on primary key values
-                var pkValues = primaryKeys.Select(pk => rowData.ContainsKey(pk) && rowData[pk] != DBNull.Value ? rowData[pk].ToString() : "NULL");
-                var keyStr = string.Join("|", pkValues);
+                // Create a base key string based on primary key values
+                var pkValues = primaryKeys.Select(pk => rowData.ContainsKey(pk) && rowData[pk] != null && rowData[pk] != DBNull.Value ? Convert.ToString(rowData[pk]) : "NULL");
+                var baseKey = string.Join("|", pkValues);
+                
+                // Track duplicate keys (common with NULL PKs) to ensure all rows are preserved
+                if (!keyCounts.ContainsKey(baseKey)) keyCounts[baseKey] = 0;
+                keyCounts[baseKey]++;
+                var finalKey = keyCounts[baseKey] > 1 ? $"{baseKey}_row{keyCounts[baseKey]}" : baseKey;
 
-                data[keyStr] = rowData;
+                data[finalKey] = rowData;
             }
         }
         catch 

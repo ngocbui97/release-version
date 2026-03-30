@@ -50,3 +50,4 @@ C:\PROJECT_LCM\release-version\ReleasePrepTool\release-version\obj\Debug\net10.0
 C:\PROJECT_LCM\release-version\ReleasePrepTool\release-version\obj\Debug\net10.0-windows\ReleasePrepTool.pdb
 C:\PROJECT_LCM\release-version\ReleasePrepTool\release-version\obj\Debug\net10.0-windows\ReleasePrepTool.genruntimeconfig.cache
 C:\PROJECT_LCM\release-version\ReleasePrepTool\release-version\obj\Debug\net10.0-windows\ref\ReleasePrepTool.dll
+C:\PROJECT_LCM\release-version\ReleasePrepTool\release-version\obj\Debug\net10.0-windows\ReleasePrepTool.sourcelink.json
