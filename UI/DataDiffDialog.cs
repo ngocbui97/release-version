@@ -9,11 +9,11 @@ namespace ReleasePrepTool.UI
 {
     public class DataDiffDialog : Form
     {
-        private string _tableName;
-        private List<DataRowDiff> _diffs;
-        private Label lblSummary;
-        private TabControl tabControl;
-        private Panel pnlEmpty;
+        private string _tableName = default!;
+        private List<DataRowDiff> _diffs = default!;
+        private Label lblSummary = default!;
+        private TabControl tabControl = default!;
+        private Panel pnlEmpty = default!;
 
         public DataDiffDialog(string tableName, List<DataRowDiff> diffs)
         {
@@ -229,7 +229,7 @@ namespace ReleasePrepTool.UI
                 {
                     if (!grid.Columns.Contains(col)) continue;
                     var val = data.ContainsKey(col) ? data[col] : null;
-                    row.Cells[col].Value = val == null || val is DBNull ? "NULL" : val.ToString();
+                    row.Cells[col].Value = val == null || val is DBNull ? "NULL" : (val.ToString() ?? "");
                 }
             }
 

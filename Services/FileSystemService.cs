@@ -55,4 +55,14 @@ public class FileSystemService
     {
          File.AppendAllText(path, content + Environment.NewLine);
     }
+
+    public string SaveSqlScript(string fileName, string content, bool isSchema)
+    {
+        var typeStr = isSchema ? "schema" : "data";
+        var dir = Path.Combine(BaseReleasePath, "database", "script_update", typeStr);
+        Directory.CreateDirectory(dir);
+        var fullPath = Path.Combine(dir, fileName);
+        File.WriteAllText(fullPath, content);
+        return fullPath;
+    }
 }

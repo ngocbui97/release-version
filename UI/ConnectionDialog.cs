@@ -32,7 +32,8 @@ namespace ReleasePrepTool.UI
             var btnCancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 80 };
             var btnTest = new Button { Text = "Test", Width = 80 };
             
-            btnTest.Click += async (s, e) => {
+            btnTest.Click += async (object? s, EventArgs e) => {
+                if (s == null) return;
                 var btn = (Button)s;
                 var originalText = btn.Text;
                 btn.Text = "Testing...";
@@ -42,7 +43,7 @@ namespace ReleasePrepTool.UI
                     using var conn = new Npgsql.NpgsqlConnection(connStr);
                     await conn.OpenAsync();
                     MessageBox.Show("Connection successful!", "Test Connection", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    if (Config == null) Config = new DatabaseConfig();
+                    if (Config == null) Config = new DatabaseConfig { Host = "", Username = "", Password = "", DatabaseName = "" };
                     Config.IsValid = true;
                 }
                 catch (Exception ex) {
@@ -55,7 +56,7 @@ namespace ReleasePrepTool.UI
                 }
             };
 
-            btnOk.Click += (s, e) => {
+            btnOk.Click += (object? s, EventArgs e) => {
                 if (string.IsNullOrWhiteSpace(txtDbName.Text)) {
                     MessageBox.Show("Database name is required.");
                     this.DialogResult = DialogResult.None;
@@ -72,7 +73,7 @@ namespace ReleasePrepTool.UI
                 };
             };
             
-            EventHandler markInvalid = (s, e) => { if (Config != null) Config.IsValid = false; };
+            EventHandler markInvalid = (object? s, EventArgs e) => { if (Config != null) Config.IsValid = false; };
             txtHost.TextChanged += markInvalid;
             txtPort.TextChanged += markInvalid;
             txtUser.TextChanged += markInvalid;

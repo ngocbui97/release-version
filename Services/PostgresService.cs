@@ -48,7 +48,7 @@ public class PostgresService
         return databases;
     }
 
-    public async Task<List<string>> GetPrimaryKeysAsync(string dbName, string tableName)
+    public async Task<List<string>> GetPrimaryKeysAsync(string dbName, string tableName, string schemaName = "public")
     {
         var pks = new List<string>();
         await using var conn = new NpgsqlConnection(_config.GetConnectionString());
@@ -58,9 +58,10 @@ public class PostgresService
             SELECT a.attname
             FROM   pg_index i
             JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE  i.indrelid = CAST('public.' || quote_ident($1) AS regclass) AND i.indisprimary;";
+            WHERE  i.indrelid = CAST(quote_ident($1) || '.' || quote_ident($2) AS regclass) AND i.indisprimary;";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
         cmd.Parameters.AddWithValue(tableName);
         
         try
@@ -76,13 +77,17 @@ public class PostgresService
         return pks;
     }
 
-    public async Task<List<string>> GetTablesAsync()
+    public async Task<List<string>> GetSchemaTablesAsync(string dbName, string schemaName)
     {
         var tables = new List<string>();
-        await using var conn = new NpgsqlConnection(_config.GetConnectionString());
+        // Use connection string for the specific database
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
         await conn.OpenAsync();
 
-        await using var cmd = new NpgsqlCommand("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';", conn);
+        var sql = "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
@@ -92,11 +97,11 @@ public class PostgresService
         return tables;
     }
 
-    public async Task<long> GetTableRowCountAsync(string tableName)
+    public async Task<long> GetTableRowCountAsync(string tableName, string schemaName = "public")
     {
         await using var conn = new NpgsqlConnection(_config.GetConnectionString());
         await conn.OpenAsync();
-        await using var cmd = new NpgsqlCommand($"SELECT COUNT(*) FROM public.\"{tableName}\"", conn);
+        await using var cmd = new NpgsqlCommand($"SELECT COUNT(*) FROM {schemaName}.\"{tableName}\"", conn);
         return (long)(await cmd.ExecuteScalarAsync() ?? 0L);
     }
 
@@ -172,17 +177,17 @@ public class PostgresService
         }
     }
 
-    public async Task DeleteRecordAsync(string tableName, string pkColumn, string pkValue)
+    public async Task DeleteRecordAsync(string tableName, string pkColumn, string pkValue, string schemaName = "public")
     {
         await using var conn = new NpgsqlConnection(_config.GetConnectionString());
         await conn.OpenAsync();
-        var sql = $"DELETE FROM public.\"{tableName}\" WHERE \"{pkColumn}\" = @pkValue";
+        var sql = $"DELETE FROM {schemaName}.\"{tableName}\" WHERE \"{pkColumn}\" = @pkValue";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("pkValue", pkValue);
         await cmd.ExecuteNonQueryAsync();
     }
 
-    public async Task<List<JunkRecord>> SearchJunkDataAsync(string searchKeyword)
+    public async Task<List<JunkRecord>> SearchJunkDataAsync(string searchKeyword, string schemaName = "public")
     {
         var results = new List<JunkRecord>();
         var keyword = $"%{searchKeyword}%";
@@ -195,19 +200,22 @@ public class PostgresService
             SELECT t.table_name, c.column_name
             FROM information_schema.tables t
             JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema
-            WHERE t.table_schema = 'public' AND c.data_type IN ('text', 'character varying', 'character')
+            WHERE t.table_schema = @schema AND c.data_type IN ('text', 'character varying', 'character')
             AND t.table_type = 'BASE TABLE';";
 
         var tableCols = new Dictionary<string, List<string>>();
         await using (var cmd = new NpgsqlCommand(metaSql, conn))
-        await using (var reader = await cmd.ExecuteReaderAsync())
         {
-            while (await reader.ReadAsync())
+            cmd.Parameters.AddWithValue("schema", schemaName);
+            await using (var reader = await cmd.ExecuteReaderAsync())
             {
-                var table = reader.GetString(0);
-                var col = reader.GetString(1);
-                if (!tableCols.ContainsKey(table)) tableCols[table] = new List<string>();
-                tableCols[table].Add(col);
+                while (await reader.ReadAsync())
+                {
+                    var table = reader.GetString(0);
+                    var col = reader.GetString(1);
+                    if (!tableCols.ContainsKey(table)) tableCols[table] = new List<string>();
+                    tableCols[table].Add(col);
+                }
             }
         }
 
@@ -220,11 +228,12 @@ public class PostgresService
                 SELECT a.attname
                 FROM   pg_index i
                 JOIN   pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-                WHERE  i.indrelid = $1::regclass AND i.indisprimary LIMIT 1;";
+                WHERE  i.indrelid = CAST(quote_ident($1) || '.' || quote_ident($2) AS regclass) AND i.indisprimary LIMIT 1;";
             
             string pkColumn = null;
             await using (var pkCmd = new NpgsqlCommand(pkSql, conn))
             {
+                pkCmd.Parameters.AddWithValue(schemaName);
                 pkCmd.Parameters.AddWithValue(table);
                 try { pkColumn = (string)await pkCmd.ExecuteScalarAsync(); } catch { }
             }
@@ -233,7 +242,7 @@ public class PostgresService
 
             foreach (var col in tc.Value)
             {
-                var searchSql = $"SELECT \"{pkColumn}\", \"{col}\" FROM public.\"{table}\" WHERE \"{col}\" ILIKE @kw LIMIT 50";
+                var searchSql = $"SELECT \"{pkColumn}\", \"{col}\" FROM {schemaName}.\"{table}\" WHERE \"{col}\" ILIKE @kw LIMIT 50";
                 await using var searchCmd = new NpgsqlCommand(searchSql, conn);
                 searchCmd.Parameters.AddWithValue("kw", keyword);
                 

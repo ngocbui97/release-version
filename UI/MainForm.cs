@@ -8,16 +8,19 @@ using System.Windows.Forms;
 using System.Text;
 using ReleasePrepTool.Models;
 using ReleasePrepTool.Services;
+using System.Diagnostics;
 
 namespace ReleasePrepTool.UI
 {
     public partial class MainForm : Form
     {
-        private TabControl tabControl = null!;
+        private TabControl tabControl = default!;
         
         // Tab 1: Configuration & Setup
         private TextBox txtProductName = null!, txtPgBinPath = null!, txtAiKey = null!, txtReleaseVersion = null!, txtReleasePath = null!;
         private Label lblOldDbStatus = null!, lblNewDbStatus = null!;
+        private Label lblSourceSchemaHeader = null!, lblTargetSchemaHeader = null!;
+        private GroupBox gbSourceData = null!, gbTargetData = null!;
         private DatabaseConfig _oldDbConfig = null!, _newDbConfig = null!;
         private Button btnConnect = null!;
         
@@ -29,17 +32,21 @@ namespace ReleasePrepTool.UI
         private TreeView treeSchema = null!;
         private Button btnLoadTables = null!;
         private ComboBox cmbSourceDb = null!, cmbTargetDb = null!;
+        private ComboBox cmbSourceSchema = null!, cmbTargetSchema = null!;
         // Data Compare
         private ComboBox cmbSourceDataDb = null!, cmbTargetDataDb = null!;
-        private Button btnLoadDataTables = null!, btnCompareData = null!;
+        private ComboBox cmbSourceDataSchema = null!, cmbTargetDataSchema = null!, cmbJunkSchema = null!;
+        private Button btnCompareData = null!;
         private DataGridView dgvTableDiffs = null!;
         // private TextBox txtDbDiffLog; // Moved to combined declaration
 
         // Tab 4: Sync & Execute DB
         private Button btnExecuteSchema = null!, btnExecuteData = null!;
-        private TextBox txtDbDiffLog = null!, txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!, txtDataLog = null!;
+        private TextBox txtDbDiffLog = null!, txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!;
         private RichTextBox txtSourceDdl = null!, txtTargetDdl = null!;
         private DataGridView dgvJunkData = null!;
+        private TextBox txtIgnoreColumns = null!, txtDataFilter = null!;
+        private CheckBox chkUseUpsert = null!;
         private List<SchemaDiffResult> _schemaDiffs = new List<SchemaDiffResult>();
         private Button btnLoadJunkData = null!, btnDeleteJunkData = null!;
         private Label lblDataStatus = null!;
@@ -52,6 +59,8 @@ namespace ReleasePrepTool.UI
 
         // Tab 7: Final Export + Tab 8: AI Review
         private Button btnReviewSchema = null!, btnReviewConfig = null!, btnGenerateSchema = null!;
+        private Button btnOpenSchemaFolder = null!, btnOpenDataFolder = null!;
+        private string? _lastSchemaExportPath, _lastDataExportPath;
 
         // Services
         private PostgresService? _oldPgService;
@@ -72,6 +81,7 @@ namespace ReleasePrepTool.UI
             this.Text = "Release Preparation Tool";
             this.Size = new Size(1000, 750);
             this.StartPosition = FormStartPosition.CenterScreen;
+            this.WindowState = FormWindowState.Maximized;
             
             tabControl = new TabControl { Dock = DockStyle.Fill };
             this.Controls.Add(tabControl);
@@ -87,7 +97,22 @@ namespace ReleasePrepTool.UI
             
             lblOldDbStatus.ForeColor = _oldDbConfig?.IsValid == true ? Color.Green : Color.Black;
             lblNewDbStatus.ForeColor = _newDbConfig?.IsValid == true ? Color.Green : Color.Black;
+            UpdateTabContextHeaders();
         }
+
+        private void UpdateTabContextHeaders()
+        {
+            if (lblSourceSchemaHeader != null && _newDbConfig != null)
+                lblSourceSchemaHeader.Text = $"Source DDL (New/Dev DB) — {NewDbName} ({_newDbConfig.Host}:{_newDbConfig.Port})";
+            if (lblTargetSchemaHeader != null && _oldDbConfig != null)
+                lblTargetSchemaHeader.Text = $"Target DDL (Old/Prod DB) — {OldDbName} ({_oldDbConfig.Host}:{_oldDbConfig.Port})";
+
+            if (gbSourceData != null && _newDbConfig != null)
+                gbSourceData.Text = $"Source Database (New/Dev) — {NewDbName} ({_newDbConfig.Host}:{_newDbConfig.Port})";
+            if (gbTargetData != null && _oldDbConfig != null)
+                gbTargetData.Text = $"Target Database (Old/Prod) — {OldDbName} ({_oldDbConfig.Host}:{_oldDbConfig.Port})";
+        }
+
 
         private void SetupUI()
         {
@@ -123,9 +148,19 @@ namespace ReleasePrepTool.UI
             txtReleasePath = CreateBrowseRow(panelConfig, "Release Output Path:", @"C:\PROJECT_LCM\output");
             txtAiKey = CreateInputRow(panelConfig, "AI API Key (optional):", "", true);
 
-            btnConnect = new Button { Text = "Initialize Services", Width = 150, Margin = new Padding(10) };
+            var pnlActions = new FlowLayoutPanel { Width = 600, Height = 50, Margin = new Padding(0, 10, 0, 0) };
+            btnConnect = new Button { Text = "Initialize Release Version", Width = 180, Height = 34, Margin = new Padding(5) };
             btnConnect.Click += BtnConnect_Click;
-            panelConfig.Controls.Add(btnConnect);
+            
+            var btnOpenReleaseFolder = new Button { Text = "📂 Open Output Folder", Width = 180, Height = 34, Margin = new Padding(5) };
+            btnOpenReleaseFolder.Click += (s, e) => {
+                if (Directory.Exists(txtReleasePath.Text)) Process.Start("explorer.exe", txtReleasePath.Text);
+                else MessageBox.Show("Release path does not exist yet.");
+            };
+
+            pnlActions.Controls.Add(btnConnect);
+            pnlActions.Controls.Add(btnOpenReleaseFolder);
+            panelConfig.Controls.Add(pnlActions);
             tabConfig.Controls.Add(panelConfig);
 
             // 2. Restore DB Tab
@@ -135,7 +170,7 @@ namespace ReleasePrepTool.UI
             btnBackupOld = new Button { Text = "Restore Old DB from File", Width = 200, Margin = new Padding(5) };
             var lblTargetDb = new Label { Text = "Target DB Name (empty = use connection name):", Width = 280, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(5) };
             var txtTargetDbName = new TextBox { Width = 200, Margin = new Padding(5), PlaceholderText = "e.g. my_old_db_v1" };
-            btnBackupOld.Click += (s, e) => RestoreDbAsync(_oldPgService, OldDbName, txtTargetDbName.Text.Trim());
+            btnBackupOld.Click += (object? s, EventArgs e) => RestoreDbAsync(_oldPgService, OldDbName, txtTargetDbName.Text.Trim());
             pnlRestoreRow.Controls.Add(btnBackupOld);
             pnlRestoreRow.Controls.Add(lblTargetDb);
             pnlRestoreRow.Controls.Add(txtTargetDbName);
@@ -154,14 +189,25 @@ namespace ReleasePrepTool.UI
             // --- LEFT PANEL: table list ---
             var pnlLeft = new Panel { Dock = DockStyle.Fill };
 
-            var pnlDbSelection = new Panel { Dock = DockStyle.Top, Height = 100, Padding = new Padding(10, 10, 10, 0), BackColor = Color.White };
+            var pnlDbSelection = new Panel { Dock = DockStyle.Top, Height = 135, Padding = new Padding(10, 10, 10, 0), BackColor = Color.White };
             var lblSrc = new Label { Text = "Source DB", Location = new Point(10, 12), Width = 75, Font = new Font(this.Font, FontStyle.Bold) };
             cmbSourceDb = new ComboBox { Location = new Point(90, 10), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
-            var lblTgt = new Label { Text = "Target DB", Location = new Point(10, 42), Width = 75, Font = new Font(this.Font, FontStyle.Bold) };
-            cmbTargetDb = new ComboBox { Location = new Point(90, 40), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
-            var btnRefreshDbs = new Button { Text = "↻ Refresh Databases", Location = new Point(90, 70), Width = 155, Height = 25, BackColor = Color.FromArgb(240, 240, 240) };
+            var lblSrcSch = new Label { Text = "Schema", Location = new Point(10, 39), Width = 75, Font = new Font(this.Font, FontStyle.Bold) };
+            cmbSourceSchema = new ComboBox { Location = new Point(90, 37), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
+
+            var lblTgt = new Label { Text = "Target DB", Location = new Point(10, 69), Width = 75, Font = new Font(this.Font, FontStyle.Bold) };
+            cmbTargetDb = new ComboBox { Location = new Point(90, 67), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
+            var lblTgtSch = new Label { Text = "Schema", Location = new Point(10, 96), Width = 75, Font = new Font(this.Font, FontStyle.Bold) };
+            cmbTargetSchema = new ComboBox { Location = new Point(90, 94), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
+            
+            var btnRefreshDbs = new Button { Text = "↻ Refresh DBs", Location = new Point(90, 124), Width = 155, Height = 25, BackColor = Color.FromArgb(240, 240, 240) };
             btnRefreshDbs.Click += async (s, e) => await LoadDatabaseListsAsync();
-            pnlDbSelection.Controls.AddRange(new Control[] { lblSrc, cmbSourceDb, lblTgt, cmbTargetDb, btnRefreshDbs });
+            
+            cmbSourceDb.SelectedIndexChanged += async (s, e) => await LoadSchemaListsAsync(cmbSourceDb.Text, cmbSourceSchema, _newDbConfig);
+            cmbTargetDb.SelectedIndexChanged += async (s, e) => await LoadSchemaListsAsync(cmbTargetDb.Text, cmbTargetSchema, _oldDbConfig);
+            
+            pnlDbSelection.Height = 155;
+            pnlDbSelection.Controls.AddRange(new Control[] { lblSrc, cmbSourceDb, lblSrcSch, cmbSourceSchema, lblTgt, cmbTargetDb, lblTgtSch, cmbTargetSchema, btnRefreshDbs });
 
             var pnlLeftToolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 38, Padding = new Padding(8, 5, 0, 5), FlowDirection = FlowDirection.LeftToRight, BackColor = Color.White };
             var btnSelectAll = new Button { Text = "All", Width = 45, Margin = new Padding(2) };
@@ -188,18 +234,24 @@ namespace ReleasePrepTool.UI
 
             // --- RIGHT PANEL: action bar + 3-pane DDL view ---
             var pnlRight = new Panel { Dock = DockStyle.Fill };
-            var pnlActionBar = new Panel { Dock = DockStyle.Top, Height = 45, Padding = new Padding(5), BackColor = Color.White };
-            btnGenerateSchema = new Button { Text = "Export Schema Script", Width = 160, Height = 30, Location = new Point(5, 5), BackColor = Color.FromArgb(240, 240, 240) };
+            var pnlActionBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 45, Padding = new Padding(5), BackColor = Color.White, FlowDirection = FlowDirection.LeftToRight };
+            btnGenerateSchema = new Button { Text = "Export Schema Script", Width = 160, Height = 34, BackColor = Color.FromArgb(240, 240, 240) };
             btnGenerateSchema.Click += BtnGenerateSchema_Click;
-            txtDbDiffLog = new TextBox { Width = 600, Height = 35, Location = new Point(175, 5), BorderStyle = BorderStyle.None, ReadOnly = true, BackColor = Color.White, Multiline = true, Font = new Font(this.Font.FontFamily, 8f) };
+            btnOpenSchemaFolder = new Button { Text = "📂", Width = 40, Height = 34, BackColor = Color.White, Visible = false };
+            btnOpenSchemaFolder.Click += (s, e) => { if (!string.IsNullOrEmpty(_lastSchemaExportPath) && File.Exists(_lastSchemaExportPath)) Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{_lastSchemaExportPath}\"") { UseShellExecute = true }); };
+            
+            txtDbDiffLog = new TextBox { Width = 500, Height = 34, BorderStyle = BorderStyle.None, ReadOnly = true, BackColor = Color.White, Multiline = true, Font = new Font(this.Font.FontFamily, 8f), Margin = new Padding(10, 8, 0, 0) };
             pnlActionBar.Controls.Add(btnGenerateSchema);
+            pnlActionBar.Controls.Add(btnOpenSchemaFolder);
             pnlActionBar.Controls.Add(txtDbDiffLog);
 
             var pnlHeaders = new TableLayoutPanel { Dock = DockStyle.Top, Height = 28, ColumnCount = 2, RowCount = 1, BackColor = Color.FromArgb(240, 240, 240) };
             pnlHeaders.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             pnlHeaders.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            pnlHeaders.Controls.Add(new Label { Text = "Source DDL (Old DB)", Font = new Font(this.Font, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10,0,0,0) }, 0, 0);
-            pnlHeaders.Controls.Add(new Label { Text = "Target DDL (New DB)", Font = new Font(this.Font, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10,0,0,0) }, 1, 0);
+            lblSourceSchemaHeader = new Label { Text = "Source DDL (New/Dev DB)", Font = new Font(this.Font, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10,0,0,0) };
+            lblTargetSchemaHeader = new Label { Text = "Target DDL (Old/Prod DB)", Font = new Font(this.Font, FontStyle.Bold), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10,0,0,0) };
+            pnlHeaders.Controls.Add(lblSourceSchemaHeader, 0, 0);
+            pnlHeaders.Controls.Add(lblTargetSchemaHeader, 1, 0);
 
             var pnlDdl = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
             pnlDdl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
@@ -231,21 +283,69 @@ namespace ReleasePrepTool.UI
             pnlDataSetup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
             pnlDataSetup.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));
             pnlDataSetup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-
-            var gbSource = new GroupBox { Text = "Source Database (New/Dev)", Dock = DockStyle.Fill, Padding = new Padding(10, 15, 10, 10) };
-            cmbSourceDataDb = new ComboBox { Name = "cmbSourceDataDb", Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
-            cmbSourceDataDb.SelectedIndexChanged += (s, e) => { if (!_suppressComboEvents && !string.IsNullOrEmpty(cmbSourceDataDb.Text) && !string.IsNullOrEmpty(cmbTargetDataDb.Text)) BtnLoadDataTables_Click(null!, null!); };
-            gbSource.Controls.Add(cmbSourceDataDb);
-            pnlDataSetup.Controls.Add(gbSource, 0, 0);
-
+ 
+            gbSourceData = new GroupBox { Text = "Source Database (New/Dev)", Dock = DockStyle.Fill, Padding = new Padding(10, 15, 10, 10) };
+            var pnlSourceData = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+            pnlSourceData.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            pnlSourceData.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            
+            cmbSourceDataDb = new ComboBox { Name = "cmbSourceDataDb", Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbSourceDataSchema = new ComboBox { Name = "cmbSourceDataSchema", Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbSourceDataDb.SelectedIndexChanged += async (s, e) => {
+                await LoadSchemaListsAsync(cmbSourceDataDb.Text, cmbSourceDataSchema, _newDbConfig);
+                if (!_suppressComboEvents && !string.IsNullOrEmpty(cmbSourceDataDb.Text) && !string.IsNullOrEmpty(cmbTargetDataDb.Text))
+                    BtnLoadDataTables_Click(null!, null!);
+            };
+            
+            pnlSourceData.Controls.Add(new Label { Text = "Database:", AutoSize = true }, 0, 0);
+            pnlSourceData.Controls.Add(cmbSourceDataDb, 0, 1);
+            pnlSourceData.Controls.Add(new Label { Text = "Schema:", AutoSize = true }, 1, 0);
+            pnlSourceData.Controls.Add(cmbSourceDataSchema, 1, 1);
+            gbSourceData.Controls.Add(pnlSourceData);
+            pnlDataSetup.Controls.Add(gbSourceData, 0, 0);
+ 
             var lblArrow = new Label { Text = "↔", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font(this.Font.FontFamily, 24f), ForeColor = Color.Gray };
             pnlDataSetup.Controls.Add(lblArrow, 1, 0);
+ 
+            gbTargetData = new GroupBox { Text = "Target Database (Old/Prod)", Dock = DockStyle.Fill, Padding = new Padding(10, 15, 10, 10) };
+            var pnlTargetData = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+            pnlTargetData.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            pnlTargetData.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            
+            cmbTargetDataDb = new ComboBox { Name = "cmbTargetDataDb", Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbTargetDataSchema = new ComboBox { Name = "cmbTargetDataSchema", Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbTargetDataDb.SelectedIndexChanged += async (s, e) => {
+                await LoadSchemaListsAsync(cmbTargetDataDb.Text, cmbTargetDataSchema, _oldDbConfig);
+                if (!_suppressComboEvents && !string.IsNullOrEmpty(cmbSourceDataDb.Text) && !string.IsNullOrEmpty(cmbTargetDataDb.Text))
+                    BtnLoadDataTables_Click(null!, null!);
+            };
+            
+            pnlTargetData.Controls.Add(new Label { Text = "Database:", AutoSize = true }, 0, 0);
+            pnlTargetData.Controls.Add(cmbTargetDataDb, 0, 1);
+            pnlTargetData.Controls.Add(new Label { Text = "Schema:", AutoSize = true }, 1, 0);
+            pnlTargetData.Controls.Add(cmbTargetDataSchema, 1, 1);
+            gbTargetData.Controls.Add(pnlTargetData);
+            pnlDataSetup.Controls.Add(gbTargetData, 2, 0);
 
-            var gbTarget = new GroupBox { Text = "Target Database (Old/Prod)", Dock = DockStyle.Fill, Padding = new Padding(10, 15, 10, 10) };
-            cmbTargetDataDb = new ComboBox { Name = "cmbTargetDataDb", Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
-            cmbTargetDataDb.SelectedIndexChanged += (s, e) => { if (!_suppressComboEvents && !string.IsNullOrEmpty(cmbSourceDataDb.Text) && !string.IsNullOrEmpty(cmbTargetDataDb.Text)) BtnLoadDataTables_Click(null!, null!); };
-            gbTarget.Controls.Add(cmbTargetDataDb);
-            pnlDataSetup.Controls.Add(gbTarget, 2, 0);
+            var gbDataOptions = new GroupBox { Text = "Comparison Options", Dock = DockStyle.Top, Height = 65, Padding = new Padding(10, 5, 10, 5), Margin = new Padding(0, 5, 0, 0) };
+            var pnlDataOptions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+            
+            pnlDataOptions.Controls.Add(new Label { Text = "Ignore Columns (csv):", AutoSize = true, Margin = new Padding(0, 5, 0, 0) });
+            txtIgnoreColumns = new TextBox { Width = 150, Margin = new Padding(5, 0, 15, 0), PlaceholderText = "e.g. updated_at, created_at" };
+            pnlDataOptions.Controls.Add(txtIgnoreColumns);
+            
+            pnlDataOptions.Controls.Add(new Label { Text = "Filter (WHERE):", AutoSize = true, Margin = new Padding(0, 5, 0, 0) });
+            txtDataFilter = new TextBox { Width = 200, Margin = new Padding(5, 0, 15, 0), PlaceholderText = "e.g. id > 1000" };
+            pnlDataOptions.Controls.Add(txtDataFilter);
+            
+            chkUseUpsert = new CheckBox { Text = "Use UPSERT (ON CONFLICT)", AutoSize = true, Margin = new Padding(0, 4, 15, 0), Checked = true };
+            pnlDataOptions.Controls.Add(chkUseUpsert);
+            
+            gbDataOptions.Controls.Add(pnlDataOptions);
+            pnlDataMain.Controls.Add(gbDataOptions);
+            pnlDataMain.Controls.SetChildIndex(gbDataOptions, 1);
+            pnlDataMain.Controls.Add(pnlDataSetup);
+            pnlDataMain.Controls.SetChildIndex(pnlDataSetup, 0);
 
             var pnlDataActions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(0, 8, 0, 0) };
 
@@ -253,13 +353,17 @@ namespace ReleasePrepTool.UI
             btnCompareData.Click += BtnCompareData_Click;
             pnlDataActions.Controls.Add(btnCompareData);
 
-            btnRefreshTables = new Button { Text = "🔄 Refresh Tables", Width = 140, Height = 34, BackColor = Color.WhiteSmoke };
+            btnRefreshTables = new Button { Text = "🔄 Load Tables", Width = 140, Height = 34, BackColor = Color.WhiteSmoke };
             btnRefreshTables.Click += (s, e) => BtnLoadDataTables_Click(null!, null!);
             pnlDataActions.Controls.Add(btnRefreshTables);
 
             var btnGenerateData = new Button { Text = "Export Sync Script", Width = 150, Height = 34 };
             btnGenerateData.Click += BtnGenerateData_Click;
             pnlDataActions.Controls.Add(btnGenerateData);
+
+            btnOpenDataFolder = new Button { Text = "📂", Width = 40, Height = 34, BackColor = Color.White, Visible = false };
+            btnOpenDataFolder.Click += (s, e) => { if (!string.IsNullOrEmpty(_lastDataExportPath) && File.Exists(_lastDataExportPath)) Process.Start("explorer.exe", $"/select,\"{_lastDataExportPath}\""); };
+            pnlDataActions.Controls.Add(btnOpenDataFolder);
 
             var btnSelectAllData = new Button { Text = "✔ Select All", Width = 110, Height = 34 };
             btnSelectAllData.Click += (s, e) =>
@@ -328,7 +432,7 @@ namespace ReleasePrepTool.UI
 
             // Single-click checkbox toggle
             dgvTableDiffs.CellContentClick += (s, ev) => {
-                if (ev.ColumnIndex == dgvTableDiffs.Columns["ColCheck"].Index && ev.RowIndex >= 0)
+                if (dgvTableDiffs.Columns["ColCheck"] != null && ev.ColumnIndex == dgvTableDiffs.Columns["ColCheck"].Index && ev.RowIndex >= 0)
                     dgvTableDiffs.CommitEdit(DataGridViewDataErrorContexts.Commit);
             };
             dgvTableDiffs.CellDoubleClick += DgvTableDiffs_CellDoubleClick;
@@ -370,16 +474,28 @@ namespace ReleasePrepTool.UI
             btnLoadJunkData = new Button { Text = "Scan Junk Data", Width = 200, Margin = new Padding(5) };
             
             var txtJunkKeyword = new TextBox { Width = 150, Text = "test", Margin = new Padding(5) };
-            btnLoadJunkData.Click += async (s, e) => await LoadJunkDataAsync(txtJunkKeyword.Text);
             
             btnDeleteJunkData = new Button { Text = "Delete Selected Rows", Width = 150, Margin = new Padding(5) };
-            btnDeleteJunkData.Click += BtnDeleteJunkData_Click;
+            
             
             var panelCleanLayout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10) };
             var pnlBtns = new FlowLayoutPanel { Width = 900, Height = 40 };
             
-            pnlBtns.Controls.Add(new Label { Text = "Keyword:", Width = 60, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(0, 10, 0, 0) });
+            pnlBtns.Controls.Add(new Label { Text = "Schema:", Width = 60, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(0, 10, 0, 0) });
+            cmbJunkSchema = new ComboBox { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(5) };
+            pnlBtns.Controls.Add(cmbJunkSchema);
+            
+            pnlBtns.Controls.Add(new Label { Text = "Keyword:", Width = 70, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(0, 10, 0, 0) });
             pnlBtns.Controls.Add(txtJunkKeyword);
+            
+            btnLoadJunkData.Click += async (object? s, EventArgs e) => await LoadJunkDataAsync(txtJunkKeyword.Text, cmbJunkSchema.Text);
+            btnDeleteJunkData.Click += (object? s, EventArgs e) => BtnDeleteJunkData_Click(cmbJunkSchema.Text);
+            
+            // Logic to populate Junk Schema when target connection changes
+            cmbTargetDataDb.SelectedIndexChanged += async (object? s, EventArgs e) => {
+                 await LoadSchemaListsAsync(cmbTargetDataDb.Text, cmbJunkSchema, _oldDbConfig);
+            };
+
             pnlBtns.Controls.Add(btnLoadJunkData);
             pnlBtns.Controls.Add(btnDeleteJunkData);
             panelCleanLayout.Controls.Add(pnlBtns);
@@ -517,7 +633,7 @@ namespace ReleasePrepTool.UI
             return txt;
         }
 
-        private async void BtnConnect_Click(object sender, EventArgs e)
+        private async void BtnConnect_Click(object? sender, EventArgs e)
         {
             if (_oldDbConfig == null || _newDbConfig == null) {
                 MessageBox.Show("Please select connections for both Old and New databases before initializing.");
@@ -542,10 +658,9 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void RestoreDbAsync(PostgresService service, string dbName, string targetDbName = "")
+        private async void RestoreDbAsync(PostgresService? service, string dbName, string targetDbName = "")
         {
             if (!EnsureServicesInitialized()) return;
-            // The service parameter might still be the old null reference if passed before auto-init.
             // Re-assign from fields if necessary.
             var activeService = (service == null) ? (dbName == OldDbName ? _oldPgService : _newPgService) : service;
             if (activeService == null) return;
@@ -563,10 +678,10 @@ namespace ReleasePrepTool.UI
                         // Thread-safe callback: marshal each line onto the UI thread
                         Action<string> onOutput = line =>
                         {
-                            if (txtBackupLog.InvokeRequired)
+                            if (txtBackupLog != null && txtBackupLog.InvokeRequired)
                                 txtBackupLog.Invoke(() => txtBackupLog.AppendText(line + "\r\n"));
                             else
-                                txtBackupLog.AppendText(line + "\r\n");
+                                txtBackupLog?.AppendText(line + "\r\n");
                         };
                         await service.RestoreDatabaseAsync(ext, ofd.FileName, string.IsNullOrWhiteSpace(targetDbName) ? null : targetDbName, onOutput);
                         txtBackupLog.AppendText($"✅ Restore into '{effectiveName}' completed successfully.\r\n");
@@ -584,13 +699,10 @@ namespace ReleasePrepTool.UI
         }
 
 
-        private void TreeSchema_AfterSelect(object sender, TreeViewEventArgs e)
+        private void TreeSchema_AfterSelect(object? sender, TreeViewEventArgs e)
         {
             if (e.Node == null || e.Node.Parent == null) return;
-            var objectName = e.Node.Tag as string;
-            if (string.IsNullOrEmpty(objectName)) return;
-
-            var diff = _schemaDiffs?.FirstOrDefault(d => d.ObjectName == objectName);
+            var diff = e.Node.Tag as SchemaDiffResult;
             if (diff != null) {
                 UpdateDiffView(diff.SourceDDL, diff.TargetDDL);
             } else {
@@ -601,6 +713,24 @@ namespace ReleasePrepTool.UI
             }
         }
 
+        private bool IsLikelyChange(string? s, string? t)
+        {
+            if (s == null || t == null) return false;
+            string s1 = s.Trim().TrimEnd(',');
+            string t1 = t.Trim().TrimEnd(',');
+            if (s1 == t1) return true;
+
+            // Check if both start with the same quoted identifier (column name)
+            if (s1.StartsWith("\"") && t1.StartsWith("\""))
+            {
+                int sIdx = s1.IndexOf("\"", 1);
+                int tIdx = t1.IndexOf("\"", 1);
+                if (sIdx > 0 && tIdx > 0 && s1.Substring(0, sIdx) == t1.Substring(0, tIdx))
+                    return true;
+            }
+            return false;
+        }
+
         private void UpdateDiffView(string source, string target)
         {
             txtSourceDdl.Clear();
@@ -609,52 +739,114 @@ namespace ReleasePrepTool.UI
             var sLines = (source ?? "").Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
             var tLines = (target ?? "").Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
 
-            int max = Math.Max(sLines.Length, tLines.Length);
+            // Compute LCS for alignment
+            int m = sLines.Length;
+            int n = tLines.Length;
+            int[,] lcs = new int[m + 1, n + 1];
 
-            for (int i = 0; i < max; i++)
+            for (int r = 1; r <= m; r++)
             {
-                string sLine = i < sLines.Length ? sLines[i] : null;
-                string tLine = i < tLines.Length ? tLines[i] : null;
+                for (int c = 1; c <= n; c++)
+                {
+                    // Ignore trailing commas for matching logic
+                    if (sLines[r - 1].Trim().TrimEnd(',') == tLines[c - 1].Trim().TrimEnd(','))
+                        lcs[r, c] = lcs[r - 1, c - 1] + 1;
+                    else
+                        lcs[r, c] = Math.Max(lcs[r - 1, c], lcs[r, c - 1]);
+                }
+            }
 
-                if (sLine == tLine)
+            var diffRows = new List<(string? s, string? t, Color sCol, Color tCol, bool isPair)>();
+            int i = m, j = n;
+            while (i > 0 || j > 0)
+            {
+                if (i > 0 && j > 0 && sLines[i - 1].Trim().TrimEnd(',') == tLines[j - 1].Trim().TrimEnd(','))
                 {
-                    AppendHighlightedLine(txtSourceDdl, sLine, Color.White);
-                    AppendHighlightedLine(txtTargetDdl, tLine, Color.White);
+                    diffRows.Add((sLines[i - 1], tLines[j - 1], Color.White, Color.White, false));
+                    i--; j--;
                 }
-                else if (sLine != null && tLine != null)
+                else if (i > 0 && j > 0 && IsLikelyChange(sLines[i - 1], tLines[j - 1]))
                 {
-                    // Changed line
-                    AppendHighlightedLine(txtSourceDdl, sLine, Color.FromArgb(230, 240, 255)); // Light Blue
-                    AppendHighlightedLine(txtTargetDdl, tLine, Color.FromArgb(230, 240, 255));
+                    // Light Blue (230, 240, 255) for paired lines
+                    var modCol = Color.FromArgb(230, 240, 255);
+                    diffRows.Add((sLines[i - 1], tLines[j - 1], modCol, modCol, true));
+                    i--; j--;
                 }
-                else if (sLine != null)
+                else if (j > 0 && (i == 0 || lcs[i, j - 1] >= lcs[i - 1, j]))
                 {
-                    // Removed line
-                    AppendHighlightedLine(txtSourceDdl, sLine, Color.FromArgb(255, 230, 230)); // Light Pink
-                    AppendHighlightedLine(txtTargetDdl, "", Color.White);
+                    diffRows.Add((null, tLines[j - 1], Color.White, Color.FromArgb(220, 255, 220), false));
+                    j--;
                 }
-                else if (tLine != null)
+                else
                 {
-                    // Added line
-                    AppendHighlightedLine(txtSourceDdl, "", Color.White);
-                    AppendHighlightedLine(txtTargetDdl, tLine, Color.FromArgb(230, 255, 230)); // Light Green
+                    diffRows.Add((sLines[i - 1], null, Color.FromArgb(255, 220, 220), Color.White, false));
+                    i--;
                 }
+            }
+            diffRows.Reverse();
+
+            foreach (var row in diffRows)
+            {
+                AppendDiffLine(txtSourceDdl, row.s, row.sCol, row.isPair ? row.t : null);
+                AppendDiffLine(txtTargetDdl, row.t, row.tCol, row.isPair ? row.s : null);
             }
         }
 
-        private void AppendHighlightedLine(RichTextBox rtb, string text, Color backColor)
+        private void AppendDiffLine(RichTextBox rtb, string? text, Color backColor, string? otherText = null)
         {
-            if (text == null) return;
             int start = rtb.TextLength;
-            rtb.AppendText(text + "\n");
+            string displayText = (text ?? "");
+            rtb.AppendText(displayText + "\n");
             int end = rtb.TextLength;
             rtb.Select(start, end - start);
             rtb.SelectionBackColor = backColor;
+            
+            if (backColor != Color.White)
+            {
+                // For paired (modified) lines, highlight the word-level difference
+                if (otherText != null && text != null && backColor == Color.FromArgb(230, 240, 255))
+                {
+                    HighlightInLineDiff(rtb, start, text, otherText);
+                }
+                else
+                {
+                    rtb.SelectionColor = Color.FromArgb(40, 40, 60);
+                    rtb.SelectionFont = new Font(rtb.Font, FontStyle.Bold);
+                }
+            }
             rtb.DeselectAll();
         }
 
-        private void TreeSchema_AfterCheck(object sender, TreeViewEventArgs e)
+        private void HighlightInLineDiff(RichTextBox rtb, int lineStart, string s1, string s2)
         {
+            // Find common prefix
+            int prefixLen = 0;
+            while (prefixLen < s1.Length && prefixLen < s2.Length && s1[prefixLen] == s2[prefixLen])
+                prefixLen++;
+
+            // Find common suffix
+            int suffixLen = 0;
+            while (suffixLen < s1.Length - prefixLen && suffixLen < s2.Length - prefixLen && 
+                   s1[s1.Length - 1 - suffixLen] == s2[s2.Length - 1 - suffixLen])
+                suffixLen++;
+
+            // Highlight the divergent section
+            int diffStart = lineStart + prefixLen;
+            int diffLen = s1.Length - prefixLen - suffixLen;
+
+            if (diffLen > 0)
+            {
+                rtb.Select(diffStart, diffLen);
+                rtb.SelectionColor = Color.Blue; // Contrast blue for change
+                rtb.SelectionFont = new Font(rtb.Font, FontStyle.Bold);
+            }
+        }
+
+
+
+        private void TreeSchema_AfterCheck(object? sender, TreeViewEventArgs e)
+        {
+            if (e.Node == null) return;
             // Sync children only if it's a root node
             if (e.Action != TreeViewAction.Unknown && e.Node.Nodes.Count > 0)
             {
@@ -678,6 +870,7 @@ namespace ReleasePrepTool.UI
                 case "Added": node.ForeColor = Color.Green; node.Text = "[NEW] " + node.Text; break;
                 case "Removed": node.ForeColor = Color.Red; node.Text = "[REMOVED] " + node.Text; break;
                 case "Altered": node.ForeColor = Color.Blue; node.Text = "[DIFF] " + node.Text; break;
+                case "ExistingInTarget": node.ForeColor = Color.Red; node.Text = "[REMOVED] " + node.Text; break;
             }
         }
 
@@ -689,8 +882,9 @@ namespace ReleasePrepTool.UI
             }
 
             // Update configs with selected database names
-            _oldDbConfig.DatabaseName = cmbSourceDb.SelectedItem.ToString();
-            _newDbConfig.DatabaseName = cmbTargetDb.SelectedItem.ToString();
+            // Standardizing: Left Side = Source (New/Dev), Right Side = Target (Old/Prod)
+            _newDbConfig!.DatabaseName = cmbSourceDb.SelectedItem?.ToString() ?? ""; 
+            _oldDbConfig!.DatabaseName = cmbTargetDb.SelectedItem?.ToString() ?? ""; 
             
             // Force re-initialization of services for the new databases
             _oldPgService = null;
@@ -698,80 +892,143 @@ namespace ReleasePrepTool.UI
             _dbCompareService = null;
 
             if (!EnsureServicesInitialized()) return;
+            _dbCompareService = new DatabaseCompareService(_newDbConfig!, _oldDbConfig!); // Passing New then Old
             treeSchema.Nodes.Clear();
             btnLoadTables.Text = "Loading...";
             btnLoadTables.Enabled = false;
             try
             {
-                txtDbDiffLog.Text = "Generating schema diffs...";
-                _schemaDiffs = await _dbCompareService.GenerateSchemaDiffResultsAsync();
+                string sourceSchema = cmbSourceSchema.Text;
+                string targetSchema = cmbTargetSchema.Text;
+                if (string.IsNullOrEmpty(sourceSchema) || string.IsNullOrEmpty(targetSchema))
+                {
+                    MessageBox.Show("Please select both source and target schemas first.");
+                    btnLoadTables.Text = "Load Diffs";
+                    btnLoadTables.Enabled = true;
+                    return;
+                }
 
-                var oldTables = await _oldPgService.GetTablesAsync();
-                var newTables = await _newPgService.GetTablesAsync();
+                txtDbDiffLog.Text = $"Generating schema diffs ('{sourceSchema}' vs '{targetSchema}')...";
+                _schemaDiffs = await _dbCompareService!.GenerateSchemaDiffResultsAsync(sourceSchema, targetSchema);
+
+                var oldTables = await _oldPgService!.GetSchemaTablesAsync(_oldDbConfig!.DatabaseName!, targetSchema);
+                var newTables = await _newPgService!.GetSchemaTablesAsync(_newDbConfig!.DatabaseName!, sourceSchema);
                 var allTables = oldTables.Union(newTables).OrderBy(t => t).ToList();
-                var commonTables = oldTables.Intersect(newTables).OrderBy(t => t).ToList();
+                // var commonTables = oldTables.Intersect(newTables).OrderBy(t => t).ToList(); // Not needed locally now
 
                 var tableRoot = new TreeNode("Tables");
                 var viewRoot = new TreeNode("Views");
                 var routineRoot = new TreeNode("Functions");
-                var indexRoot = new TreeNode("Indexes");
                 var triggerRoot = new TreeNode("Triggers");
                 var constraintRoot = new TreeNode("Constraints");
+                var indexNodeRoot = new TreeNode("Indexes");
+                var extensionRoot = new TreeNode("Extensions");
+                var roleRoot = new TreeNode("Roles");
+                var sequenceRoot = new TreeNode("Sequences");
+                var enumRoot = new TreeNode("Enums");
+                var matViewRoot = new TreeNode("Materialized Views");
 
                 foreach (var table in allTables)
                 {
                     var diff = _schemaDiffs.FirstOrDefault(d => d.ObjectName == table && d.ObjectType == "Table");
                     if (diff == null) continue; // Only show if there's a difference
 
-                    var node = new TreeNode(table) { Tag = table };
+                    var node = new TreeNode(table) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
                     tableRoot.Nodes.Add(node);
                 }
 
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "View"))
                 {
-                    var node = new TreeNode(diff.ObjectName) { Tag = diff.ObjectName };
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
                     viewRoot.Nodes.Add(node);
                 }
 
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Routine"))
                 {
-                    var node = new TreeNode(diff.ObjectName) { Tag = diff.ObjectName };
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
                     routineRoot.Nodes.Add(node);
                 }
 
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Index"))
                 {
-                    var node = new TreeNode(diff.ObjectName) { Tag = diff.ObjectName };
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
-                    indexRoot.Nodes.Add(node);
+                    indexNodeRoot.Nodes.Add(node);
                 }
 
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Trigger"))
                 {
-                    var node = new TreeNode(diff.ObjectName) { Tag = diff.ObjectName };
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
                     triggerRoot.Nodes.Add(node);
                 }
 
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Constraint"))
                 {
-                    var node = new TreeNode(diff.ObjectName) { Tag = diff.ObjectName };
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
                     ApplyDiffColors(node, diff.DiffType);
                     constraintRoot.Nodes.Add(node);
+                }
+
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Extension"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    extensionRoot.Nodes.Add(node);
+                }
+
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Role"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    roleRoot.Nodes.Add(node);
+                }
+
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Sequence"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    sequenceRoot.Nodes.Add(node);
+                }
+
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Enum"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    enumRoot.Nodes.Add(node);
+                }
+
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Materialized View"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    matViewRoot.Nodes.Add(node);
                 }
 
                 if (tableRoot.Nodes.Count > 0) treeSchema.Nodes.Add(tableRoot);
                 if (viewRoot.Nodes.Count > 0) treeSchema.Nodes.Add(viewRoot);
                 if (routineRoot.Nodes.Count > 0) treeSchema.Nodes.Add(routineRoot);
-                if (indexRoot.Nodes.Count > 0) treeSchema.Nodes.Add(indexRoot);
+                if (indexNodeRoot.Nodes.Count > 0) treeSchema.Nodes.Add(indexNodeRoot);
                 if (triggerRoot.Nodes.Count > 0) treeSchema.Nodes.Add(triggerRoot);
                 if (constraintRoot.Nodes.Count > 0) treeSchema.Nodes.Add(constraintRoot);
+                if (extensionRoot.Nodes.Count > 0) treeSchema.Nodes.Add(extensionRoot);
+                if (roleRoot.Nodes.Count > 0) treeSchema.Nodes.Add(roleRoot);
+                if (sequenceRoot.Nodes.Count > 0) treeSchema.Nodes.Add(sequenceRoot);
+                if (enumRoot.Nodes.Count > 0) treeSchema.Nodes.Add(enumRoot);
+                if (matViewRoot.Nodes.Count > 0) treeSchema.Nodes.Add(matViewRoot);
                 
                 tableRoot.Expand();
-                txtDbDiffLog.Text = $"Found {_schemaDiffs.Count} total schema differences (Tables, Views, Functions, Indexes, etc.)";
+
+                var summary = new StringBuilder($"Found {_schemaDiffs.Count} schema differences: ");
+                var typeCounts = _schemaDiffs.GroupBy(d => d.ObjectType)
+                    .OrderByDescending(g => g.Count())
+                    .Select(g => $"{g.Count()} {g.Key}{(g.Count() > 1 ? (g.Key == "Index" ? "es" : "s") : "")}")
+                    .ToList();
+                summary.Append(string.Join(", ", typeCounts));
+                txtDbDiffLog.Text = summary.ToString();
             }
             catch (Exception ex)
             {
@@ -784,14 +1041,16 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnGenerateSchema_Click(object sender, EventArgs e)
+        private async void BtnGenerateSchema_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
-            txtDbDiffLog.Text = "Generating schema diff script...";
+            string sourceSchema = cmbSourceSchema.Text;
+            string targetSchema = cmbTargetSchema.Text;
             try
             {
                 var sb = new StringBuilder();
-                sb.AppendLine($"-- Schema update script from {OldDbName} to {NewDbName}");
+                sb.AppendLine($"-- Schema update script from {sourceSchema} to {targetSchema}");
+                sb.AppendLine($"-- Source: {cmbSourceDb.Text}, Target: {cmbTargetDb.Text}");
                 sb.AppendLine($"-- Generated at {DateTime.Now}\n");
 
                 foreach (var r in _schemaDiffs)
@@ -802,9 +1061,13 @@ namespace ReleasePrepTool.UI
                 }
 
                 var sql = sb.ToString();
-                var path = _fileSystemService.GetSqlScriptPath(NewDbName, true);
-                _fileSystemService.WriteToFile(path, sql);
+                var path = _fileSystemService!.GetSqlScriptPath(NewDbName, true);
+                _fileSystemService!.WriteToFile(path, sql);
                 txtDbDiffLog.Text = $"Schema script exported to {path}";
+
+                _lastSchemaExportPath = path;
+                btnOpenSchemaFolder.Visible = true;
+                MessageBox.Show($"Schema script exported successfully to:\n{path}\n\nClick the 📂 button to open the folder.", "Export Successful");
             }
             catch (Exception ex)
             {
@@ -834,11 +1097,19 @@ namespace ReleasePrepTool.UI
                     var json = File.ReadAllText("appsettings.local.json");
                     dynamic config = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
                     if (config != null) {
-                        txtProductName.Text = (string)config.Product ?? txtProductName.Text;
-                        if (config.OldConfig != null) _oldDbConfig = config.OldConfig.ToObject<DatabaseConfig>();
-                        if (config.NewConfig != null) _newDbConfig = config.NewConfig.ToObject<DatabaseConfig>();
-                        txtPgBinPath.Text = (string)config.PgBin ?? txtPgBinPath.Text; txtReleaseVersion.Text = (string)config.Version ?? txtReleaseVersion.Text;
-                        txtReleasePath.Text = (string)config.ReleasePath ?? txtReleasePath.Text; txtAiKey.Text = (string)config.AiKey ?? txtAiKey.Text;
+                        txtProductName.Text = (string?)config.Product ?? txtProductName.Text;
+                        if (config.OldConfig != null) {
+                            var oldCfg = config.OldConfig.ToObject<DatabaseConfig>();
+                            if (oldCfg != null) _oldDbConfig = oldCfg;
+                        }
+                        if (config.NewConfig != null) {
+                            var newCfg = config.NewConfig.ToObject<DatabaseConfig>();
+                            if (newCfg != null) _newDbConfig = newCfg;
+                        }
+                        txtPgBinPath.Text = (string?)config.PgBin ?? txtPgBinPath.Text; 
+                        txtReleaseVersion.Text = (string?)config.Version ?? txtReleaseVersion.Text;
+                        txtReleasePath.Text = (string?)config.ReleasePath ?? txtReleasePath.Text; 
+                        txtAiKey.Text = (string?)config.AiKey ?? txtAiKey.Text;
                         UpdateConnectionLabels();
                     }
                 }
@@ -861,32 +1132,39 @@ namespace ReleasePrepTool.UI
                 var newDbs = await newSvc.GetAllDatabasesAsync();
 
                 cmbSourceDb.Items.Clear();
-                cmbSourceDb.Items.AddRange(oldDbs.ToArray());
+                cmbSourceDb.Items.AddRange(newDbs.ToArray());
                 cmbSourceDataDb.Items.Clear();
-                cmbSourceDataDb.Items.AddRange(oldDbs.ToArray());
-                
-                if (oldDbs.Contains(_oldDbConfig.DatabaseName)) {
-                    cmbSourceDb.SelectedItem = _oldDbConfig.DatabaseName;
-                    cmbSourceDataDb.SelectedItem = _oldDbConfig.DatabaseName;
+                cmbSourceDataDb.Items.AddRange(newDbs.ToArray());
+
+                if (newDbs.Contains(_newDbConfig.DatabaseName)) {
+                    cmbSourceDb.SelectedItem = _newDbConfig.DatabaseName;
+                    cmbSourceDataDb.SelectedItem = _newDbConfig.DatabaseName;
                 }
-                else if (oldDbs.Any()) {
+                else if (newDbs.Any()) {
                     cmbSourceDb.SelectedIndex = 0;
                     cmbSourceDataDb.SelectedIndex = 0;
                 }
 
                 cmbTargetDb.Items.Clear();
-                cmbTargetDb.Items.AddRange(newDbs.ToArray());
+                cmbTargetDb.Items.AddRange(oldDbs.ToArray());
                 cmbTargetDataDb.Items.Clear();
-                cmbTargetDataDb.Items.AddRange(newDbs.ToArray());
+                cmbTargetDataDb.Items.AddRange(oldDbs.ToArray());
 
-                if (newDbs.Contains(_newDbConfig.DatabaseName)) {
-                    cmbTargetDb.SelectedItem = _newDbConfig.DatabaseName;
-                    cmbTargetDataDb.SelectedItem = _newDbConfig.DatabaseName;
+                if (oldDbs.Contains(_oldDbConfig.DatabaseName)) {
+                    cmbTargetDb.SelectedItem = _oldDbConfig.DatabaseName;
+                    cmbTargetDataDb.SelectedItem = _oldDbConfig.DatabaseName;
                 }
-                else if (newDbs.Any()) {
+                else if (oldDbs.Any()) {
                     cmbTargetDb.SelectedIndex = 0;
                     cmbTargetDataDb.SelectedIndex = 0;
                 }
+
+                // Initial Schema Load Logic
+                if (cmbSourceDb.SelectedItem != null) await LoadSchemaListsAsync(cmbSourceDb.SelectedItem.ToString()!, cmbSourceSchema, _newDbConfig);
+                if (cmbTargetDb.SelectedItem != null) await LoadSchemaListsAsync(cmbTargetDb.SelectedItem.ToString()!, cmbTargetSchema, _oldDbConfig);
+                if (cmbSourceDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbSourceDataDb.SelectedItem.ToString()!, cmbSourceDataSchema, _newDbConfig);
+                if (cmbTargetDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbTargetDataDb.SelectedItem.ToString()!, cmbTargetDataSchema, _oldDbConfig);
+                if (cmbTargetDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbTargetDataDb.SelectedItem.ToString()!, cmbJunkSchema, _oldDbConfig);
             }
             catch (Exception ex) {
                 MessageBox.Show($"Error loading database lists: {ex.Message}");
@@ -896,7 +1174,37 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnLoadDataTables_Click(object sender, EventArgs e)
+        private async Task LoadSchemaListsAsync(string dbName, ComboBox targetCmb, DatabaseConfig? baseConfig)
+        {
+            if (string.IsNullOrEmpty(dbName) || baseConfig == null) return;
+            
+            try
+            {
+                // Temporarily create service to fetch schemas
+                var tempCfg = new DatabaseConfig {
+                    Host = baseConfig.Host,
+                    Port = baseConfig.Port,
+                    Username = baseConfig.Username,
+                    Password = baseConfig.Password,
+                    DatabaseName = dbName
+                };
+                
+                var svc = new DatabaseCompareService(tempCfg, tempCfg);
+                var schemas = await svc.GetSchemasAsync(tempCfg);
+                
+                targetCmb.Items.Clear();
+                foreach (var s in schemas) targetCmb.Items.Add(s);
+                
+                if (targetCmb.Items.Contains("public")) targetCmb.SelectedItem = "public";
+                else if (targetCmb.Items.Count > 0) targetCmb.SelectedIndex = 0;
+            }
+            catch (Exception ex)
+            {
+                txtDbDiffLog.Text = $"Error loading schemas for {dbName}: {ex.Message}";
+            }
+        }
+
+        private async void BtnLoadDataTables_Click(object? sender, EventArgs e)
         {
             if (cmbSourceDataDb.SelectedItem == null || cmbTargetDataDb.SelectedItem == null) {
                 MessageBox.Show("Please select both Source and Target databases.");
@@ -910,15 +1218,22 @@ namespace ReleasePrepTool.UI
 
             if (!EnsureServicesInitialized()) return;
             
-            lblDataStatus.Text = "⌛ Loading data tables...";
+            string sourceSchema = cmbSourceDataSchema.Text;
+            string targetSchema = cmbTargetDataSchema.Text;
+            if (string.IsNullOrEmpty(sourceSchema) || string.IsNullOrEmpty(targetSchema)) {
+                MessageBox.Show("Please select both source and target schemas.");
+                return;
+            }
+
+            lblDataStatus.Text = $"⌛ Loading tables from schemas '{sourceSchema}' and '{targetSchema}'...";
             lblDataStatus.ForeColor = Color.Blue;
             pbDataLoading.Visible = true;
             this.Cursor = Cursors.WaitCursor;
             
             try
             {
-                var sourceTables = await _newPgService!.GetTablesAsync();
-                var targetTables = await _oldPgService!.GetTablesAsync();
+                var sourceTables = await _newPgService!.GetSchemaTablesAsync(_newDbConfig.DatabaseName, sourceSchema);
+                var targetTables = await _oldPgService!.GetSchemaTablesAsync(_oldDbConfig.DatabaseName, targetSchema);
                 
                 var allTables = sourceTables.Union(targetTables).OrderBy(t => t).ToList();
 
@@ -933,7 +1248,7 @@ namespace ReleasePrepTool.UI
                     
                     if (inSource && !inTarget)
                     {
-                        var count = await _newPgService!.GetTableRowCountAsync(table);
+                        var count = await _newPgService!.GetTableRowCountAsync(table, sourceSchema);
                         row.DefaultCellStyle.BackColor = Color.FromArgb(230, 240, 255); // Light Blue (Added)
                         row.Cells["ColIdentical"].Value = "Added (New)";
                         row.Cells["ColSource"].Value = count;
@@ -942,7 +1257,7 @@ namespace ReleasePrepTool.UI
                     }
                     else if (!inSource && inTarget)
                     {
-                        var count = await _oldPgService!.GetTableRowCountAsync(table);
+                        var count = await _oldPgService!.GetTableRowCountAsync(table, targetSchema);
                         row.DefaultCellStyle.BackColor = Color.FromArgb(255, 230, 230); // Light Pink (Removed)
                         row.Cells["ColIdentical"].Value = "Removed (Old)";
                         row.Cells["ColTarget"].Value = count;
@@ -951,7 +1266,7 @@ namespace ReleasePrepTool.UI
                     }
                     else
                     {
-                        var pks = await _newPgService!.GetPrimaryKeysAsync(_newDbConfig.DatabaseName, table);
+                        var pks = await _newPgService!.GetPrimaryKeysAsync(_newDbConfig.DatabaseName, table, sourceSchema);
                         if (!pks.Any())
                         {
                             row.Cells["ColIdentical"].Value = "⚠️ No Primary Key";
@@ -961,13 +1276,13 @@ namespace ReleasePrepTool.UI
                         }
                         else
                         {
-                            row.Cells["ColIdentical"].Value = "📋 Pending";
+                            row.Cells["ColIdentical"].Value = "⌛ Waiting Compare";
                         }
                     }
                 }
 
                 if (!allTables.Any())
-                    lblDataStatus.Text = "ℹ️ No tables found in either database.";
+                    lblDataStatus.Text = $"ℹ️ No tables found in schemas.";
                 else
                     lblDataStatus.Text = $"✅ Found {allTables.Count} tables total ({sourceTables.Intersect(targetTables).Count()} common).";
             }
@@ -983,7 +1298,7 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnCompareData_Click(object sender, EventArgs e)
+        private async void BtnCompareData_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
             
@@ -992,12 +1307,12 @@ namespace ReleasePrepTool.UI
             {
                 row.Visible = true;
                 var statusVal = row.Cells["ColIdentical"].Value?.ToString();
-                if (statusVal == "📋 Pending" || statusVal == "Different" || statusVal == "Synchronized")
+                if (statusVal == "⌛ Waiting Compare" || statusVal == "Different" || statusVal == "Synchronized")
                 {
                     row.Cells["ColDiff"].Value = "";
                     row.Cells["ColSource"].Value = "";
                     row.Cells["ColTarget"].Value = "";
-                    row.Cells["ColIdentical"].Value = "📋 Pending";
+                    row.Cells["ColIdentical"].Value = "⌛ Waiting Compare";
                     row.DefaultCellStyle.BackColor = Color.White;
                     row.DefaultCellStyle.ForeColor = Color.Black;
                 }
@@ -1021,7 +1336,9 @@ namespace ReleasePrepTool.UI
             {
                 foreach (var row in checkedRows)
                 {
-                    string table = row.Cells["ColName"].Value.ToString()!;
+                    string table = row.Cells["ColName"].Value?.ToString() ?? "";
+                    string sourceSchema = cmbSourceDataSchema.Text;
+                    string targetSchema = cmbTargetDataSchema.Text;
                     // UX#1: Show per-row status while comparing
                     row.Cells["ColIdentical"].Value = "⌛ Comparing...";
                     row.Cells["ColDiff"].Value = "...";
@@ -1029,7 +1346,8 @@ namespace ReleasePrepTool.UI
                     row.Cells["ColTarget"].Value = "";
                     dgvTableDiffs.Refresh();
 
-                    var summary = await _dbCompareService.GetTableDataDiffSummaryAsync(table);
+                    var options = GetDataCompareOptions();
+                    var summary = await _dbCompareService!.GetTableDataDiffSummaryAsync(table, sourceSchema, targetSchema, options);
 
                     row.Cells["ColDiff"].Value = summary.UpdatedCount;
                     row.Cells["ColSource"].Value = summary.InsertedCount;
@@ -1068,19 +1386,19 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void DgvTableDiffs_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        private async void DgvTableDiffs_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0) return;
             // UX#3: Ignore double-click on the checkbox column
-            if (e.ColumnIndex == dgvTableDiffs.Columns["ColCheck"].Index) return;
+            if (dgvTableDiffs.Columns["ColCheck"] != null && e.ColumnIndex == dgvTableDiffs.Columns["ColCheck"].Index) return;
 
             var row = dgvTableDiffs.Rows[e.RowIndex];
             var table = row.Cells["ColName"].Value?.ToString();
             if (string.IsNullOrEmpty(table)) return;
 
-            var status = row.Cells["ColIdentical"].Value?.ToString() ?? "";
+            var statusStr = row.Cells["ColIdentical"].Value?.ToString() ?? "";
             // Bug#2 fix: use Contains to avoid emoji encoding mismatch; also block Added/Removed (no comparison done)
-            if (status == "📋 Pending" || status.Contains("No Primary") || status == "Added (New)" || status == "Removed (Old)" || status.Contains("Comparing"))
+            if (statusStr == "⌛ Waiting Compare" || statusStr.Contains("No Primary") || statusStr == "Added (New)" || statusStr == "Removed (Old)" || statusStr.Contains("Comparing"))
             {
                 MessageBox.Show($"Table '{table}' has not been compared yet.\n\nPlease check the table and click '▶ Start Comparison' first.",
                     "Not Yet Compared", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1093,7 +1411,10 @@ namespace ReleasePrepTool.UI
             this.Cursor = Cursors.WaitCursor;
             try
             {
-                var diffs = await _dbCompareService.GetDetailedTableDataDiffAsync(table);
+                string sourceSchema = cmbSourceDataSchema.Text;
+                string targetSchema = cmbTargetDataSchema.Text;
+                var options = GetDataCompareOptions();
+                var diffs = await _dbCompareService!.GetDetailedTableDataDiffAsync(table, sourceSchema, targetSchema, options);
                 using (var dlg = new DataDiffDialog(table, diffs))
                 {
                     dlg.ShowDialog();
@@ -1108,6 +1429,59 @@ namespace ReleasePrepTool.UI
                 lblDataStatus.Text = "";
                 this.Cursor = Cursors.Default;
             }
+        }
+
+        private async void BtnGenerateData_Click(object? sender, EventArgs e)
+        {
+            var tablesToSync = GetSelectedTables();
+            if (!tablesToSync.Any()) { MessageBox.Show("Please check tables to sync first."); return; }
+
+            if (!EnsureServicesInitialized()) return;
+
+            string sourceSchema = cmbSourceDataSchema.Text;
+            string targetSchema = cmbTargetDataSchema.Text;
+            
+            lblDataStatus.Text = "⌛ Generating synchronization script...";
+            this.Cursor = Cursors.WaitCursor;
+            
+            try
+            {
+                var options = GetDataCompareOptions();
+                var diffScript = await _dbCompareService!.GenerateDataDiffAsync(tablesToSync, sourceSchema, targetSchema, options);
+                
+                var fileName = $"data_sync_{DateTime.Now:yyyyMMdd_HHmmss}.sql";
+                var fullPath = _fileSystemService!.SaveSqlScript(fileName, diffScript, false);
+                _lastDataExportPath = fullPath;
+                
+                lblDataStatus.Text = $"✅ Exported to {fileName}";
+                btnOpenDataFolder.Visible = true;
+                
+                if (MessageBox.Show($"Data sync script generated and saved to:\n{fullPath}\n\nWould you like to open it now?", "Export Successful", MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                {
+                    Process.Start(new ProcessStartInfo(fullPath) { UseShellExecute = true });
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error generating data sync script:\n{ex.Message}");
+            }
+            finally
+            {
+                this.Cursor = Cursors.Default;
+            }
+        }
+
+        private List<string> GetSelectedTables()
+        {
+            var selectedTables = new List<string>();
+            foreach (DataGridViewRow row in dgvTableDiffs.Rows)
+            {
+                if (Convert.ToBoolean(row.Cells["ColCheck"].Value))
+                {
+                    selectedTables.Add(row.Cells["ColName"].Value?.ToString() ?? "");
+                }
+            }
+            return selectedTables;
         }
 
         private void ApplyTableFilter(string filter)
@@ -1138,50 +1512,24 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnGenerateData_Click(object sender, EventArgs e)
-        {
-            if (!EnsureServicesInitialized()) return;
 
-            var selectedTables = dgvTableDiffs.Rows.Cast<DataGridViewRow>()
-                .Where(r => Convert.ToBoolean(r.Cells["ColCheck"].Value))
-                .Select(r => r.Cells["ColName"].Value.ToString()!)
-                .ToList();
 
-            if (!selectedTables.Any())
-            {
-                MessageBox.Show("Please select at least one table.");
-                return;
-            }
-
-            try
-            {
-                var script = await _dbCompareService.GenerateDataDiffAsync(selectedTables);
-                var path = _fileSystemService.GetSqlScriptPath(_newDbConfig.DatabaseName, false);
-                _fileSystemService.WriteToFile(path, script);
-                MessageBox.Show($"Data sync script generated at: {path}");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error generating script: {ex.Message}");
-            }
-        }
-
-        private async void BtnExecuteSchema_Click(object sender, EventArgs e)
+        private async void BtnExecuteSchema_Click(object? sender, EventArgs e)
         {
             if (MessageBox.Show($"Are you sure you want to execute the SCHEMA synchronization script directly on the TARGET database ({OldDbName})?", 
                 "Confirm Execution", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
             {
-                var path = _fileSystemService.GetSqlScriptPath(NewDbName, true);
+                var path = _fileSystemService!.GetSqlScriptPath(NewDbName, true);
                 await ExecuteScriptOnOldDb(path, "Schema");
             }
         }
 
-        private async void BtnExecuteData_Click(object sender, EventArgs e)
+        private async void BtnExecuteData_Click(object? sender, EventArgs e)
         {
             if (MessageBox.Show($"Are you sure you want to execute the DATA synchronization script directly on the TARGET database ({OldDbName})?", 
                 "Confirm Execution", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
             {
-                var path = _fileSystemService.GetSqlScriptPath(NewDbName, false);
+                var path = _fileSystemService!.GetSqlScriptPath(NewDbName, false);
                 await ExecuteScriptOnOldDb(path, "Data");
             }
         }
@@ -1205,18 +1553,18 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnExportFinal_Click(object sender, EventArgs e)
+        private async void BtnExportFinal_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
             try
             {
                 txtFinalExportLog.AppendText($"Starting final export for {OldDbName}...\r\n");
-                var backupPath = _fileSystemService.GetBackupPath(OldDbName);
-                await _oldPgService.BackupDatabaseAsync(backupPath);
+                var backupPath = _fileSystemService!.GetBackupPath(OldDbName);
+                await _oldPgService!.BackupDatabaseAsync(backupPath);
                 txtFinalExportLog.AppendText($"Backup saved to {backupPath}\r\n");
 
-                var fullPath = _fileSystemService.GetFullScriptPath(OldDbName);
-                await _oldPgService.DumpFullScriptAsync(fullPath);
+                var fullPath = _fileSystemService!.GetFullScriptPath(OldDbName);
+                await _oldPgService!.DumpFullScriptAsync(fullPath);
                 txtFinalExportLog.AppendText($"Full script saved to {fullPath}\r\n");
             }
             catch (Exception ex)
@@ -1225,33 +1573,39 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnVerifySync_Click(object sender, EventArgs e)
+        private async void BtnVerifySync_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
-            txtExecuteLog.AppendText("Verifying Sync Status...\r\n");
+            string schemaSS = cmbSourceSchema.Text;
+            string schemaST = cmbTargetSchema.Text;
+            string schemaDS = cmbSourceDataSchema.Text;
+            string schemaDT = cmbTargetDataSchema.Text;
+            
+            txtExecuteLog.AppendText($"Verifying Sync Status (Schema: {schemaSS}->{schemaST}, Data: {schemaDS}->{schemaDT})...\r\n");
             try
             {
-                var schemaScript = await _dbCompareService.GenerateSchemaDiffAsync();
+                var schemaScript = await _dbCompareService!.GenerateSchemaDiffAsync(schemaSS, schemaST);
                 if (string.IsNullOrWhiteSpace(schemaScript) || (!schemaScript.Contains("ALTER TABLE") && !schemaScript.Contains("CREATE TABLE") && !schemaScript.Contains("DROP ")))
                 {
-                    txtExecuteLog.AppendText("-> Schema Verification Passed! No remaining schema differences.\r\n");
+                    txtExecuteLog.AppendText($"-> Schema Verification Passed! No remaining schema differences in '{schemaSS}' vs '{schemaST}'.\r\n");
                 }
                 else
                 {
-                    txtExecuteLog.AppendText("-> Schema Verification FAILED! There are still schema differences. Please check Tab 3.\r\n");
+                    txtExecuteLog.AppendText($"-> Schema Verification FAILED! There are still schema differences. Please check Tab 3.\r\n");
                 }
                 
-                var selectedTables = GetCheckedTables();
+                var selectedTables = GetSelectedTables();
                 if (selectedTables.Any())
                 {
-                    var dataScript = await _dbCompareService.GenerateDataDiffAsync(selectedTables);
+                    var options = GetDataCompareOptions();
+                    var dataScript = await _dbCompareService!.GenerateDataDiffAsync(selectedTables, schemaDS, schemaDT, options);
                     if (string.IsNullOrWhiteSpace(dataScript) || (!dataScript.Contains("INSERT INTO") && !dataScript.Contains("UPDATE ") && !dataScript.Contains("DELETE FROM")))
                     {
-                        txtExecuteLog.AppendText("-> Data Verification Passed! Selected tables are synchronized.\r\n");
+                        txtExecuteLog.AppendText($"-> Data Verification Passed! Selected tables are synchronized.\r\n");
                     }
                     else
                     {
-                        txtExecuteLog.AppendText("-> Data Verification FAILED! There are still data differences. Please check Tab 3.\r\n");
+                        txtExecuteLog.AppendText($"-> Data Verification FAILED! There are still data differences. Please check Tab 4.\r\n");
                     }
                 }
             }
@@ -1261,10 +1615,11 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async Task LoadJunkDataAsync(string keyword)
+        private async Task LoadJunkDataAsync(string keyword, string schemaName)
         {
             if (!EnsureServicesInitialized()) return;
             if (string.IsNullOrWhiteSpace(keyword)) return;
+            if (string.IsNullOrEmpty(schemaName)) { MessageBox.Show("Please select a schema."); return; }
 
             dgvJunkData.Columns.Clear();
             dgvJunkData.Rows.Clear();
@@ -1276,7 +1631,7 @@ namespace ReleasePrepTool.UI
 
             try
             {
-                var records = await _oldPgService.SearchJunkDataAsync(keyword);
+                var records = await _oldPgService!.SearchJunkDataAsync(keyword, schemaName);
                 foreach (var r in records)
                 {
                     dgvJunkData.Rows.Add(r.TableName ?? "", r.PrimaryKeyColumn ?? "", r.PrimaryKeyValue ?? "", r.ColumnName ?? "", r.DetectedContent ?? "");
@@ -1289,7 +1644,7 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnDeleteJunkData_Click(object sender, EventArgs e)
+        private async void BtnDeleteJunkData_Click(string schemaName)
         {
             if (!EnsureServicesInitialized()) return;
             
@@ -1309,8 +1664,8 @@ namespace ReleasePrepTool.UI
                     var pkVal = row.Cells["PrimaryKeyValue"].Value?.ToString();
 
                     if (string.IsNullOrEmpty(table) || string.IsNullOrEmpty(pkCol) || string.IsNullOrEmpty(pkVal)) continue;
-
-                    await _oldPgService!.DeleteRecordAsync(table, pkCol, pkVal);
+                    
+                    await _oldPgService!.DeleteRecordAsync(table, pkCol, pkVal, schemaName);
                     dgvJunkData.Rows.Remove(row);
                     deleted++;
                 }
@@ -1333,7 +1688,7 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private void BtnCompareConfig_Click(object sender, EventArgs e)
+        private void BtnCompareConfig_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
             if (!File.Exists(txtOldConfigPath.Text) || !File.Exists(txtNewConfigPath.Text)) return;
@@ -1373,7 +1728,7 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void BtnReviewSchema_Click(object sender, EventArgs e)
+        private async void BtnReviewSchema_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized() || _fileSystemService == null) return;
             var path = _fileSystemService.GetSqlScriptPath(NewDbName, true);
@@ -1385,7 +1740,7 @@ namespace ReleasePrepTool.UI
             txtAiReviewLog.Text = result;
         }
 
-        private async void BtnReviewConfig_Click(object sender, EventArgs e)
+        private async void BtnReviewConfig_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized() || _aiService == null) return;
             if (string.IsNullOrEmpty(txtConfigDiffLog.Text)) { txtAiReviewLog.Text = "Please compare config first."; return; }
@@ -1411,6 +1766,16 @@ namespace ReleasePrepTool.UI
                 }
             }
             return selectedTables;
+        }
+        private DataCompareOptions GetDataCompareOptions()
+        {
+            return new DataCompareOptions
+            {
+                IgnoreColumns = txtIgnoreColumns.Text.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(c => c.Trim()).ToList(),
+                WhereClause = txtDataFilter.Text.Trim(),
+                UseUpsert = chkUseUpsert.Checked
+            };
         }
     }
 }
