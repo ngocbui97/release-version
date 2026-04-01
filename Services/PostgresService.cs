@@ -80,7 +80,6 @@ public class PostgresService
     public async Task<List<string>> GetSchemaTablesAsync(string dbName, string schemaName)
     {
         var tables = new List<string>();
-        // Use connection string for the specific database
         var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
         await using var conn = new NpgsqlConnection(connStr);
         await conn.OpenAsync();
@@ -95,6 +94,59 @@ public class PostgresService
         }
 
         return tables;
+    }
+
+    public async Task<List<string>> GetSchemasAsync(string dbName)
+    {
+        var schemas = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        
+        var sql = "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('information_schema', 'pg_catalog') AND schema_name NOT LIKE 'pg_toast%' AND schema_name NOT LIKE 'pg_temp%';";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            schemas.Add(reader.GetString(0));
+        }
+        return schemas;
+    }
+
+    public async Task<List<string>> GetSchemaViewsAsync(string dbName, string schemaName)
+    {
+        var views = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+
+        var sql = "SELECT table_name FROM information_schema.views WHERE table_schema = $1 ORDER BY table_name;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add(reader.GetString(0));
+        }
+        return views;
+    }
+
+    public async Task<List<string>> GetSchemaRoutinesAsync(string dbName, string schemaName)
+    {
+        var routines = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+
+        var sql = "SELECT routine_name FROM information_schema.routines WHERE routine_schema = $1 ORDER BY routine_name;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            routines.Add(reader.GetString(0));
+        }
+        return routines;
     }
 
     public async Task<long> GetTableRowCountAsync(string tableName, string schemaName = "public")
@@ -184,6 +236,47 @@ public class PostgresService
         var sql = $"DELETE FROM {schemaName}.\"{tableName}\" WHERE \"{pkColumn}\" = @pkValue";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue("pkValue", pkValue);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task DropSchemaAsync(string dbName, string schemaName, bool cascade = true)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = $"DROP SCHEMA IF EXISTS \"{schemaName}\" {(cascade ? "CASCADE" : "RESTRICT")}";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task DropTableAsync(string dbName, string schemaName, string tableName)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = $"DROP TABLE IF EXISTS \"{schemaName}\".\"{tableName}\" CASCADE";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task DropViewAsync(string dbName, string schemaName, string viewName)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = $"DROP VIEW IF EXISTS \"{schemaName}\".\"{viewName}\" CASCADE";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task DropRoutineAsync(string dbName, string schemaName, string routineName)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        // Postgres DROP ROUTINE handles both functions and procedures
+        var sql = $"DROP ROUTINE IF EXISTS \"{schemaName}\".\"{routineName}\" CASCADE";
+        await using var cmd = new NpgsqlCommand(sql, conn);
         await cmd.ExecuteNonQueryAsync();
     }
 

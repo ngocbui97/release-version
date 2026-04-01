@@ -48,7 +48,6 @@ namespace ReleasePrepTool.UI
         private TextBox txtIgnoreColumns = null!, txtDataFilter = null!;
         private CheckBox chkUseUpsert = null!;
         private List<SchemaDiffResult> _schemaDiffs = new List<SchemaDiffResult>();
-        private Button btnLoadJunkData = null!, btnDeleteJunkData = null!;
         private Label lblDataStatus = null!;
         private ProgressBar pbDataLoading = null!;
         private Button btnRefreshTables = null!;
@@ -60,6 +59,19 @@ namespace ReleasePrepTool.UI
         // Tab 7: Final Export + Tab 8: AI Review
         private Button btnReviewSchema = null!, btnReviewConfig = null!, btnGenerateSchema = null!;
         private Button btnOpenSchemaFolder = null!, btnOpenDataFolder = null!;
+        private ComboBox cmbJunkConnection = null!;
+        private TreeView tvJunkSelection = null!;
+        private TextBox txtJunkKeywords = null!;
+        private TreeView tvJunkResults = null!;
+        private TabControl tcJunkResults = null!;
+        private DataGridView dgvJunkDataResults = null!;
+        private RichTextBox txtJunkScript = null!;
+        private SplitContainer splitJunk = null!;
+        private Button btnAnalyzeJunk = null!, btnCleanJunk = null!, btnGenerateJunkScript = null!;
+        private JunkAnalysisService? _junkService;
+        private List<JunkAnalysisResult> _lastJunkResults = new();
+        private DatabaseConfig? _customJunkConfig;
+        private PostgresService? _customJunkPgService;
         private string? _lastSchemaExportPath, _lastDataExportPath;
 
         // Services
@@ -68,7 +80,8 @@ namespace ReleasePrepTool.UI
         private DatabaseCompareService? _dbCompareService;
         private FileSystemService? _fileSystemService;
         private AIOperationService? _aiService;
-        private bool _suppressComboEvents = false; // Guard against SelectedIndexChanged firing during batch ComboBox updates
+        private bool _suppressComboEvents = false; 
+        private bool _isInitializingJunk = false; // Guard for startup Junk Tab population
 
         public MainForm()
         {
@@ -468,40 +481,118 @@ namespace ReleasePrepTool.UI
             panelSync.Controls.Add(txtExecuteLog);
             tabSyncDb.Controls.Add(panelSync);
 
-            // 6. Clean Junk Data Tab
+            // 6. Clean Junk Tab (Redesigned)
             var tabCleanJunk = new TabPage("6. Clean Junk");
-            dgvJunkData = new DataGridView { Width = 900, Height = 450, AllowUserToAddRows = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect };
-            btnLoadJunkData = new Button { Text = "Scan Junk Data", Width = 200, Margin = new Padding(5) };
+            splitJunk = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 220, SplitterWidth = 5 };
             
-            var txtJunkKeyword = new TextBox { Width = 150, Text = "test", Margin = new Padding(5) };
+            // Top Panel: Configuration (Target selection, Keywords, and DB/Schema Tree)
+            var pnlJunkConfig = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Padding = new Padding(15) };
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35f)); // Connection & Keywords
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45f)); // Selection Tree
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f)); // Action Buttons
+
+            // Cell 1: Connection & Keywords
+            var pnlJunkBasics = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
+            pnlJunkBasics.Controls.Add(new Label { Text = "1. Connection Source:", Width = 200, Font = new Font(this.Font, FontStyle.Bold) });
+            cmbJunkConnection = new ComboBox { Width = 220, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 5, 0, 15) };
+            cmbJunkConnection.Items.AddRange(new string[] { "Source (Dev)", "Target (Prod)", "Custom Connection..." });
+            pnlJunkBasics.Controls.Add(cmbJunkConnection);
             
-            btnDeleteJunkData = new Button { Text = "Delete Selected Rows", Width = 150, Margin = new Padding(5) };
+            pnlJunkBasics.Controls.Add(new Label { Text = "2. Junk Patterns (comma separated):", Width = 250, Font = new Font(this.Font, FontStyle.Bold) });
+            txtJunkKeywords = new TextBox { Width = 220, Text = "test, dev, tmp, 123", Margin = new Padding(0, 5, 0, 15) };
+            pnlJunkBasics.Controls.Add(txtJunkKeywords);
             
+            btnAnalyzeJunk = new Button { Text = "🔍 ANALYZE JUNK", Width = 220, Height = 45, Font = new Font(this.Font.FontFamily, 10f, FontStyle.Bold), BackColor = Color.LightSkyBlue, FlatStyle = FlatStyle.Flat };
+            btnAnalyzeJunk.Click += BtnAnalyzeJunk_Click;
+            pnlJunkBasics.Controls.Add(btnAnalyzeJunk);
+
+            // Cell 2: DB -> Schema Tree Selection
+            var pnlJunkSelection = new GroupBox { Text = "Selection Scope (Database > Schema)", Dock = DockStyle.Fill, Font = new Font(this.Font, FontStyle.Bold) };
+            tvJunkSelection = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, Font = new Font("Segoe UI", 9f, FontStyle.Regular), Margin = new Padding(5) };
+            tvJunkSelection.AfterCheck += TvJunkSelection_AfterCheck;
+            tvJunkSelection.BeforeExpand += TvJunkSelection_BeforeExpand;
+            pnlJunkSelection.Controls.Add(tvJunkSelection);
+
+            // Cell 3: Actions
+            var pnlJunkGlobalActions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10, 0, 0, 0) };
             
-            var panelCleanLayout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10) };
-            var pnlBtns = new FlowLayoutPanel { Width = 900, Height = 40 };
+            btnGenerateJunkScript = new Button { Text = "📜 PREVIEW SCRIPT", Width = 160, Height = 34, Margin = new Padding(0, 0, 0, 10), BackColor = Color.WhiteSmoke };
+            btnGenerateJunkScript.Click += BtnGenerateJunkScript_Click;
             
-            pnlBtns.Controls.Add(new Label { Text = "Schema:", Width = 60, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(0, 10, 0, 0) });
-            cmbJunkSchema = new ComboBox { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(5) };
-            pnlBtns.Controls.Add(cmbJunkSchema);
+            btnCleanJunk = new Button { Text = "🗑 CLEAN NOW!", Width = 160, Height = 45, BackColor = Color.MistyRose, Font = new Font(this.Font, FontStyle.Bold) };
+            btnCleanJunk.Click += BtnCleanJunk_Click;
             
-            pnlBtns.Controls.Add(new Label { Text = "Keyword:", Width = 70, TextAlign = ContentAlignment.MiddleRight, Margin = new Padding(0, 10, 0, 0) });
-            pnlBtns.Controls.Add(txtJunkKeyword);
+            pnlJunkGlobalActions.Controls.Add(btnGenerateJunkScript);
+            pnlJunkGlobalActions.Controls.Add(btnCleanJunk);
+
+            pnlJunkConfig.Controls.Add(pnlJunkBasics, 0, 0);
+            pnlJunkConfig.Controls.Add(pnlJunkSelection, 1, 0);
+            pnlJunkConfig.Controls.Add(pnlJunkGlobalActions, 2, 0);
             
-            btnLoadJunkData.Click += async (object? s, EventArgs e) => await LoadJunkDataAsync(txtJunkKeyword.Text, cmbJunkSchema.Text);
-            btnDeleteJunkData.Click += (object? s, EventArgs e) => BtnDeleteJunkData_Click(cmbJunkSchema.Text);
+            splitJunk.Panel1.Controls.Add(pnlJunkConfig);
             
-            // Logic to populate Junk Schema when target connection changes
-            cmbTargetDataDb.SelectedIndexChanged += async (object? s, EventArgs e) => {
-                 await LoadSchemaListsAsync(cmbTargetDataDb.Text, cmbJunkSchema, _oldDbConfig);
+            // Bottom Panel: Results categorized by Tab (Structure vs Data Records)
+            var splitResults = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 550, SplitterWidth = 5 };
+            
+            tcJunkResults = new TabControl { Dock = DockStyle.Fill };
+            var tabStruct = new TabPage("1. Structure Cleanup");
+            var tabData = new TabPage("2. Data Records Cleanup");
+            
+            tvJunkResults = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, Font = new Font("Consolas", 9f), BorderStyle = BorderStyle.None };
+            tabStruct.Controls.Add(tvJunkResults);
+            
+            dgvJunkDataResults = new DataGridView { 
+                Dock = DockStyle.Fill, 
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, 
+                BackgroundColor = Color.White,
+                BorderStyle = BorderStyle.None,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                AllowUserToAddRows = false,
+                RowHeadersVisible = false,
+                Font = new Font("Consolas", 8.5f)
             };
+            // Add Checkbox column
+            var chkColJunk = new DataGridViewCheckBoxColumn { Name = "Selected", HeaderText = "", Width = 30, FillWeight = 30 };
+            dgvJunkDataResults.Columns.Add(chkColJunk);
+            dgvJunkDataResults.Columns.Add("Database", "Database");
+            dgvJunkDataResults.Columns.Add("Table", "Table");
+            dgvJunkDataResults.Columns.Add("Column", "Column");
+            dgvJunkDataResults.Columns.Add("PK", "PK");
+            dgvJunkDataResults.Columns.Add("Reason", "Reason/Value");
+            
+            tabData.Controls.Add(dgvJunkDataResults);
+            
+            tcJunkResults.TabPages.Add(tabStruct);
+            tcJunkResults.TabPages.Add(tabData);
+            
+            txtJunkScript = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.LightGray, Font = new Font("Consolas", 10f), BorderStyle = BorderStyle.None };
+            
+            splitResults.Panel1.Controls.Add(tcJunkResults);
+            splitResults.Panel2.Controls.Add(txtJunkScript);
+            splitJunk.Panel2.Controls.Add(splitResults);
+            
+            tabCleanJunk.Controls.Add(splitJunk);
 
-            pnlBtns.Controls.Add(btnLoadJunkData);
-            pnlBtns.Controls.Add(btnDeleteJunkData);
-            panelCleanLayout.Controls.Add(pnlBtns);
-            panelCleanLayout.Controls.Add(dgvJunkData);
-            tabCleanJunk.Controls.Add(panelCleanLayout);
-
+            // Logic to populate when connection changes
+            cmbJunkConnection.SelectedIndexChanged += async (s, e) => {
+                if (cmbJunkConnection.SelectedIndex == 2) // Custom
+                {
+                    using (var dlg = new ConnectionDialog("Custom Database Connection", _customJunkConfig))
+                    {
+                        if (dlg.ShowDialog() == DialogResult.OK)
+                        {
+                            _customJunkConfig = dlg.Config;
+                            _customJunkPgService = new PostgresService(_customJunkConfig) { PostgresBinPath = txtPgBinPath.Text };
+                            await UpdateJunkSelectionTreeAsync();
+                        }
+                    }
+                }
+                else
+                {
+                    await UpdateJunkSelectionTreeAsync(_isInitializingJunk);
+                }
+            };
             // 7. Final Export
             var tabFinalExport = new TabPage("7. Export Final Release DB");
             var pnlFinal = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10) };
@@ -561,13 +652,23 @@ namespace ReleasePrepTool.UI
             tabControl.TabPages.Add(tabAi);               // 9
 
             tabControl.SelectedIndexChanged += async (s, e) => {
-                if (tabControl.SelectedTab == tabCompareSchema && cmbSourceDb.Items.Count == 0)
+                if ((tabControl.SelectedTab == tabCompareSchema || tabControl.SelectedTab == tabCompareData) && cmbSourceDb.Items.Count == 0)
                     await LoadDatabaseListsAsync();
             };
             
             this.FormClosing += (s, e) => SaveConfig();
-            this.Load += (s, e) => {
+            this.Load += async (s, e) => {
                 LoadConfig();
+                
+                // Pre-load database lists for both comparison tabs if config is present
+                if (_oldDbConfig != null && _newDbConfig != null) {
+                    await LoadDatabaseListsAsync();
+                }
+
+                // Trigger initial Junk tree load AFTER config is loaded
+                _isInitializingJunk = true;
+                try { cmbJunkConnection.SelectedIndex = 1; } finally { _isInitializingJunk = false; }
+
                 // Ensure SplitterDistance is set after layout is complete
                 if (splitCompare != null) splitCompare.SplitterDistance = 260;
             };
@@ -593,14 +694,14 @@ namespace ReleasePrepTool.UI
             return txt;
         }
 
-        private bool EnsureServicesInitialized()
+        private bool EnsureServicesInitialized(bool silent = false)
         {
-            if (_oldPgService != null && _newPgService != null && _dbCompareService != null && _fileSystemService != null)
+            if (_oldPgService != null && _newPgService != null && _dbCompareService != null && _fileSystemService != null && _junkService != null)
                 return true;
 
             if (_oldDbConfig == null || _newDbConfig == null)
             {
-                MessageBox.Show("Please select connections for both Old and New databases first.");
+                if (!silent) MessageBox.Show("Please select connections for both Old and New databases first.");
                 return false;
             }
 
@@ -611,6 +712,7 @@ namespace ReleasePrepTool.UI
                 _dbCompareService = new DatabaseCompareService(_oldDbConfig!, _newDbConfig!);
                 _fileSystemService = new FileSystemService(txtReleasePath.Text, txtReleaseVersion.Text, txtProductName.Text);
                 _aiService = new AIOperationService(txtAiKey.Text);
+                _junkService = new JunkAnalysisService(_oldPgService);
 
                 _fileSystemService.EnsureDirectoryStructure();
                 return true;
@@ -1615,66 +1717,238 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async Task LoadJunkDataAsync(string keyword, string schemaName)
+        // --- New Clean Junk Tab Logic ---
+        private PostgresService GetActiveJunkPgService()
         {
-            if (!EnsureServicesInitialized()) return;
-            if (string.IsNullOrWhiteSpace(keyword)) return;
-            if (string.IsNullOrEmpty(schemaName)) { MessageBox.Show("Please select a schema."); return; }
+             if (cmbJunkConnection.SelectedIndex == 0) return _newPgService!;
+             if (cmbJunkConnection.SelectedIndex == 1) return _oldPgService!;
+             if (cmbJunkConnection.SelectedIndex == 2 && _customJunkPgService != null) return _customJunkPgService;
+             return _oldPgService!;
+        }
 
-            dgvJunkData.Columns.Clear();
-            dgvJunkData.Rows.Clear();
-            dgvJunkData.Columns.Add("TableName", "Table Name");
-            dgvJunkData.Columns.Add("PrimaryKeyColumn", "PK Column");
-            dgvJunkData.Columns.Add("PrimaryKeyValue", "PK Value");
-            dgvJunkData.Columns.Add("ColumnName", "Column containing Junk");
-            dgvJunkData.Columns.Add("DetectedContent", "Detected Content");
-
-            try
-            {
-                var records = await _oldPgService!.SearchJunkDataAsync(keyword, schemaName);
-                foreach (var r in records)
+        private async Task UpdateJunkSelectionTreeAsync(bool silent = false)
+        {
+            if (!EnsureServicesInitialized(silent)) return;
+            var service = GetActiveJunkPgService();
+            tvJunkSelection.Nodes.Clear();
+            
+            try {
+                var dbs = await service.GetAllDatabasesAsync();
+                foreach (var db in dbs.Where(d => !d.StartsWith("pg_") && d != "postgres").OrderBy(d => d))
                 {
-                    dgvJunkData.Rows.Add(r.TableName ?? "", r.PrimaryKeyColumn ?? "", r.PrimaryKeyValue ?? "", r.ColumnName ?? "", r.DetectedContent ?? "");
+                    var dbNode = new TreeNode(db) { Tag = "DB" };
+                    dbNode.Nodes.Add(new TreeNode("Loading...") { Tag = "DUMMY" }); // Add dummy for expansion
+                    tvJunkSelection.Nodes.Add(dbNode);
                 }
-                MessageBox.Show($"Found {records.Count} suspected junk records.");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error loading junk data: {ex.Message}");
+            } catch (Exception ex) { MessageBox.Show("Error loading DBs: " + ex.Message); }
+        }
+
+        private async void TvJunkSelection_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
+        {
+            if (e.Node == null || e.Node.Nodes.Count != 1 || e.Node.Nodes[0].Tag?.ToString() != "DUMMY") return;
+
+            e.Node.Nodes.Clear();
+            var service = GetActiveJunkPgService();
+            var dbName = e.Node.Text;
+
+            try {
+                var schemas = await service.GetSchemasAsync(dbName);
+                foreach (var schema in schemas.OrderBy(s => s))
+                {
+                    var schemaNode = new TreeNode(schema) { Tag = "SCHEMA", Checked = e.Node.Checked };
+                    e.Node.Nodes.Add(schemaNode);
+                }
+            } catch { 
+                e.Node.Nodes.Add(new TreeNode("Error loading schemas") { ForeColor = Color.Red });
             }
         }
 
-        private async void BtnDeleteJunkData_Click(string schemaName)
+        private void TvJunkSelection_AfterCheck(object? sender, TreeViewEventArgs e)
+        {
+            if (e.Action == TreeViewAction.Unknown || e.Node == null) return;
+
+            // Cascade check to children
+            foreach (TreeNode child in e.Node.Nodes)
+            {
+                child.Checked = e.Node.Checked;
+            }
+        }
+
+        private async void BtnAnalyzeJunk_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
-            
-            if (dgvJunkData.SelectedRows.Count == 0 || MessageBox.Show($"Are you sure you want to permanently delete {dgvJunkData.SelectedRows.Count} selected records from {OldDbName}?", 
-                "Confirm Deletion", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-            {
-                return;
-            }
+            var keywords = txtJunkKeywords.Text.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).ToList();
+            if (!keywords.Any()) { MessageBox.Show("Please enter junk keywords."); return; }
 
-            int deleted = 0;
-            try
+            // Gather selected DBs and their selected schemas
+            var selectedScopes = new List<(string Db, List<string> Schemas)>();
+            foreach (TreeNode dbNode in tvJunkSelection.Nodes)
             {
-                foreach (DataGridViewRow row in dgvJunkData.SelectedRows)
+                if (dbNode.Checked || dbNode.Nodes.Cast<TreeNode>().Any(n => n.Checked))
                 {
-                    var table = row.Cells["TableName"].Value?.ToString();
-                    var pkCol = row.Cells["PrimaryKeyColumn"].Value?.ToString();
-                    var pkVal = row.Cells["PrimaryKeyValue"].Value?.ToString();
+                    var schemas = new List<string>();
+                    // If node wasn't expanded, we might need to load schemas here or assume all if DB checked
+                    if (dbNode.Nodes.Count == 1 && dbNode.Nodes[0].Tag?.ToString() == "DUMMY")
+                    {
+                         if (dbNode.Checked) {
+                             // Auto-load if we're scanning the whole DB
+                             var service = GetActiveJunkPgService();
+                             schemas = await service.GetSchemasAsync(dbNode.Text);
+                         }
+                    }
+                    else 
+                    {
+                        schemas = dbNode.Nodes.Cast<TreeNode>().Where(n => n.Checked).Select(n => n.Text).ToList();
+                    }
 
-                    if (string.IsNullOrEmpty(table) || string.IsNullOrEmpty(pkCol) || string.IsNullOrEmpty(pkVal)) continue;
-                    
-                    await _oldPgService!.DeleteRecordAsync(table, pkCol, pkVal, schemaName);
-                    dgvJunkData.Rows.Remove(row);
-                    deleted++;
+                    if (schemas.Any())
+                        selectedScopes.Add((dbNode.Text, schemas));
                 }
-                MessageBox.Show($"Successfully deleted {deleted} rows.");
             }
-            catch (Exception ex)
+
+            if (!selectedScopes.Any()) { MessageBox.Show("Please select at least one database/schema to analyze."); return; }
+
+            btnAnalyzeJunk.Enabled = false;
+            btnAnalyzeJunk.Text = "⌛ Analyzing...";
+            tvJunkResults.Nodes.Clear();
+            dgvJunkDataResults.Rows.Clear();
+            _lastJunkResults.Clear();
+
+            try {
+                _junkService = new JunkAnalysisService(GetActiveJunkPgService());
+                
+                // We need to update AnalyzeAsync to handle specific schemas per DB if we want full precision.
+                foreach (var scope in selectedScopes)
+                {
+                    var dbResults = await _junkService.AnalyzeAsync(new[] { scope.Db }, keywords);
+                    foreach (var res in dbResults)
+                    {
+                        res.Items = res.Items.Where(i => scope.Schemas.Contains(i.SchemaName)).ToList();
+                        if (res.Items.Any()) _lastJunkResults.Add(res);
+                    }
+                }
+
+                foreach (var res in _lastJunkResults)
+                {
+                    // 1. Populate Structural Tree
+                    var structItems = res.Items.Where(i => i.Type != JunkType.DataRecord).ToList();
+                    if (structItems.Any())
+                    {
+                        var dbNode = new TreeNode($"Database: {res.DatabaseName}") { Tag = res.DatabaseName };
+                        foreach (var item in structItems)
+                        {
+                            var schemaNode = dbNode.Nodes.Cast<TreeNode>().FirstOrDefault(n => n.Text == item.SchemaName);
+                            if (schemaNode == null)
+                            {
+                                schemaNode = new TreeNode(item.SchemaName) { Tag = item.SchemaName };
+                                dbNode.Nodes.Add(schemaNode);
+                            }
+                            
+                            var typeNode = schemaNode.Nodes.Cast<TreeNode>().FirstOrDefault(n => n.Text == item.Type.ToString());
+                            if (typeNode == null)
+                            {
+                                typeNode = new TreeNode(item.Type.ToString());
+                                schemaNode.Nodes.Add(typeNode);
+                            }
+
+                            var itemNode = new TreeNode(item.ObjectName)
+                            {
+                                Tag = item,
+                                Checked = true,
+                                ToolTipText = item.DetectedContent ?? "Structural junk"
+                            };
+                            typeNode.Nodes.Add(itemNode);
+                        }
+                        dbNode.Expand();
+                        tvJunkResults.Nodes.Add(dbNode);
+                    }
+
+                    // 2. Populate Data Grid
+                    var dataItems = res.Items.Where(i => i.Type == JunkType.DataRecord).ToList();
+                    foreach (var item in dataItems)
+                    {
+                        int rowIndex = dgvJunkDataResults.Rows.Add(true, res.DatabaseName, item.ObjectName, item.ColumnName, item.PrimaryKeyValue, item.DetectedContent);
+                        dgvJunkDataResults.Rows[rowIndex].Tag = item;
+                    }
+                }
+                
+                if (!_lastJunkResults.Any()) MessageBox.Show("No junk found with these keywords!");
+                else
+                {
+                    // Auto-generate script preview
+                    BtnGenerateJunkScript_Click(null, null);
+                    // Switch to the tab with more results
+                    if (dgvJunkDataResults.Rows.Count > 0 && tvJunkResults.Nodes.Count == 0)
+                        tcJunkResults.SelectedIndex = 1;
+                }
+            }
+            catch (Exception ex) { MessageBox.Show("Analysis failed: " + ex.Message); }
+            finally {
+                btnAnalyzeJunk.Enabled = true;
+                btnAnalyzeJunk.Text = "🔍 ANALYZE JUNK";
+            }
+        }
+
+        private void BtnGenerateJunkScript_Click(object? sender, EventArgs e)
+        {
+            if (_junkService == null || !_lastJunkResults.Any()) return;
+            var selectedItems = GetSelectedJunkItems();
+            if (!selectedItems.Any()) { MessageBox.Show("Select items in the tree view first."); return; }
+
+            var script = _junkService.GenerateCleanupScript(selectedItems);
+            txtJunkScript.Text = script;
+        }
+
+        private async void BtnCleanJunk_Click(object? sender, EventArgs e)
+        {
+            if (!EnsureServicesInitialized()) return;
+            var selectedItems = GetSelectedJunkItems();
+            if (!selectedItems.Any()) { MessageBox.Show("Select items to clean first."); return; }
+
+            if (MessageBox.Show($"Are you sure you want to PERMANENTLY DELETE {selectedItems.Count} items from the database?", 
+                "Confirm Destruction", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+            var service = GetActiveJunkPgService();
+            btnCleanJunk.Enabled = false;
+            try {
+                foreach (var item in selectedItems)
+                {
+                    switch (item.Type)
+                    {
+                        case JunkType.Schema: await service.DropSchemaAsync(item.DatabaseName, item.SchemaName, true); break;
+                        case JunkType.Table: await service.DropTableAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
+                        case JunkType.View: await service.DropViewAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
+                        case JunkType.Routine: await service.DropRoutineAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
+                        case JunkType.DataRecord: await service.DeleteRecordAsync(item.ObjectName, item.PrimaryKeyColumn!, item.PrimaryKeyValue!, item.SchemaName); break;
+                    }
+                }
+                MessageBox.Show("Cleanup completed successfully.");
+                BtnAnalyzeJunk_Click(null, null); // Refresh
+            } catch (Exception ex) { MessageBox.Show("Cleaning error: " + ex.Message); }
+            finally { btnCleanJunk.Enabled = true; }
+        }
+
+        private List<JunkItem> GetSelectedJunkItems()
+        {
+            var list = new List<JunkItem>();
+            // 1. From Structure Tree
+            foreach (TreeNode dbNode in tvJunkResults.Nodes)
+                foreach (TreeNode schemaNode in dbNode.Nodes)
+                    foreach (TreeNode typeNode in schemaNode.Nodes)
+                        foreach (TreeNode itemNode in typeNode.Nodes)
+                            if (itemNode.Checked && itemNode.Tag is JunkItem item)
+                                list.Add(item);
+
+            // 2. From Data Grid
+            foreach (DataGridViewRow row in dgvJunkDataResults.Rows)
             {
-                MessageBox.Show($"Error deleting data: {ex.Message}");
+                if (row.Cells["Selected"].Value is bool b && b && row.Tag is JunkItem item)
+                {
+                    list.Add(item);
+                }
             }
+
+            return list;
         }
 
         private void SelectFile(TextBox txt, string filter)
