@@ -54,284 +54,126 @@ public class DatabaseCompareService
 
     public async Task<List<SchemaDiffResult>> GenerateSchemaDiffResultsAsync(string sourceSchema, string targetSchema)
     {
-        var results = new List<SchemaDiffResult>();
+        var categoryResults = new Dictionary<string, List<SchemaDiffResult>> {
+            { "Extension", new() }, { "Role", new() }, { "Enum", new() }, { "Sequence", new() },
+            { "Table", new() }, { "View", new() }, { "Routine", new() }, { "Materialized View", new() },
+            { "Index", new() }, { "Constraint", new() }, { "Trigger", new() }
+        };
 
         // 1. Get Tables and Columns for both databases
         var targetCols = await GetColumnsAsync(_targetConfig, targetSchema);
         var sourceCols = await GetColumnsAsync(_sourceConfig, sourceSchema);
-
         var targetTables = targetCols.Select(c => c.TableName).Distinct();
         var sourceTables = sourceCols.Select(c => c.TableName).Distinct();
 
-        // 2. Get Views
+        // 2. Get Views/Routines
         var targetViews = await GetViewsAsync(_targetConfig, targetSchema);
         var sourceViews = await GetViewsAsync(_sourceConfig, sourceSchema);
-
-        // 3. Get Routines (Functions/Procedures)
         var targetRoutines = await GetRoutinesAsync(_targetConfig, targetSchema);
         var sourceRoutines = await GetRoutinesAsync(_sourceConfig, sourceSchema);
 
-        // 4. Get Indexes
+        // 3. Get Other Objects
         var targetIndexes = await GetIndexesAsync(_targetConfig, targetSchema);
         var sourceIndexes = await GetIndexesAsync(_sourceConfig, sourceSchema);
-
-        // 5. Get Triggers
         var targetTriggers = await GetTriggersAsync(_targetConfig, targetSchema);
         var sourceTriggers = await GetTriggersAsync(_sourceConfig, sourceSchema);
-
-        // 6. Get Constraints
         var targetConstraints = await GetConstraintsAsync(_targetConfig, targetSchema);
         var sourceConstraints = await GetConstraintsAsync(_sourceConfig, sourceSchema);
-
-        // 7. Get Extensions
         var targetExtensions = await GetExtensionsAsync(_targetConfig);
         var sourceExtensions = await GetExtensionsAsync(_sourceConfig);
-
-        // 8. Get Roles
         var targetRoles = await GetRolesAsync(_targetConfig);
         var sourceRoles = await GetRolesAsync(_sourceConfig);
-
-        // 9. Get Sequences
         var targetSequences = await GetSequencesAsync(_targetConfig, targetSchema);
         var sourceSequences = await GetSequencesAsync(_sourceConfig, sourceSchema);
-
-        // 10. Get Enums
         var targetEnums = await GetEnumsAsync(_targetConfig, targetSchema);
         var sourceEnums = await GetEnumsAsync(_sourceConfig, sourceSchema);
-
-        // 11. Get Materialized Views
         var targetMatViews = await GetMaterializedViewsAsync(_targetConfig, targetSchema);
         var sourceMatViews = await GetMaterializedViewsAsync(_sourceConfig, sourceSchema);
 
-        // Added Tables (In Source/New but not in Target/Old)
+        // --- Category: Extension ---
+        foreach (var ext in sourceExtensions.Keys.Except(targetExtensions.Keys))
+            categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Added", SourceDDL = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';", TargetDDL = "-- N/A", DiffScript = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';" });
+        foreach (var ext in targetExtensions.Keys.Intersect(sourceExtensions.Keys))
+            if (targetExtensions[ext] != sourceExtensions[ext])
+                categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Altered", SourceDDL = $"VERSION '{sourceExtensions[ext]}'", TargetDDL = $"VERSION '{targetExtensions[ext]}'", DiffScript = $"ALTER EXTENSION \"{ext}\" UPDATE TO '{sourceExtensions[ext]}';" });
+
+        // --- Category: Role ---
+        foreach (var role in sourceRoles.Keys.Except(targetRoles.Keys))
+            categoryResults["Role"].Add(new SchemaDiffResult { ObjectType = "Role", ObjectName = role, DiffType = "Added", SourceDDL = sourceRoles[role], TargetDDL = "-- N/A", DiffScript = sourceRoles[role] });
+
+        // --- Category: Enum ---
+        foreach (var name in sourceEnums.Keys.Except(targetEnums.Keys))
+            categoryResults["Enum"].Add(new SchemaDiffResult { ObjectType = "Enum", ObjectName = name, DiffType = "Added", SourceDDL = sourceEnums[name], TargetDDL = "-- N/A", DiffScript = sourceEnums[name] });
+
+        // --- Category: Sequence ---
+        await CompareGenericObjectsAsync(categoryResults["Sequence"], "Sequence", targetSequences, sourceSequences, targetSchema);
+
+        // --- Category: Table ---
+        var tableDeps = await GetTableDependenciesAsync(_sourceConfig, sourceSchema);
         var addedTables = sourceTables.Except(targetTables).ToList();
-        foreach (var table in addedTables)
+        var sortedAddedTables = SortTablesTopologically(addedTables, tableDeps);
+        
+        foreach (var table in sortedAddedTables)
         {
             var cols = sourceCols.Where(c => c.TableName == table).ToList();
-            var targetDdl = new StringBuilder();
-            targetDdl.AppendLine($"CREATE TABLE {targetSchema}.\"{table}\" (");
+            var ddl = new StringBuilder();
+            ddl.AppendLine($"CREATE TABLE {targetSchema}.\"{table}\" (");
             var colDefs = cols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}");
-            targetDdl.AppendLine(string.Join(",\n", colDefs));
-            targetDdl.AppendLine(");");
+            ddl.AppendLine(string.Join(",\n", colDefs));
+            ddl.AppendLine(");");
 
-            results.Add(new SchemaDiffResult {
-                ObjectType = "Table",
-                ObjectName = table,
-                DiffType = "Added",
-                SourceDDL = targetDdl.ToString(), // DDL from Source
-                TargetDDL = "-- Table does not exist in Target",
-                DiffScript = targetDdl.ToString()
-            });
+            categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Added", SourceDDL = ddl.ToString(), TargetDDL = "-- N/A", DiffScript = ddl.ToString() });
         }
 
-        // Removed Tables (In Target/Old but not in Source/New)
-        var removedTables = targetTables.Except(sourceTables).ToList();
-        foreach (var table in removedTables)
-        {
-            var cols = targetCols.Where(c => c.TableName == table).ToList();
-            var sourceDdl = new StringBuilder();
-            sourceDdl.AppendLine($"CREATE TABLE {targetSchema}.\"{table}\" (");
-            var colDefs = cols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}");
-            sourceDdl.AppendLine(string.Join(",\n", colDefs));
-            sourceDdl.AppendLine(");");
-
-            results.Add(new SchemaDiffResult {
-                ObjectType = "Table",
-                ObjectName = table,
-                DiffType = "ExistingInTarget",
-                SourceDDL = "-- Table removed in Source",
-                TargetDDL = sourceDdl.ToString(), // DDL from Target
-                DiffScript = $"-- Table \"{table}\" was removed from Source. To remove from Target, run manually: DROP TABLE IF EXISTS {targetSchema}.\"{table}\" CASCADE;"
-            });
-        }
-
-        // Altered Tables
         var commonTables = targetTables.Intersect(sourceTables).ToList();
         foreach (var table in commonTables)
         {
             var targetTableCols = targetCols.Where(c => c.TableName == table).ToList();
             var sourceTableCols = sourceCols.Where(c => c.TableName == table).ToList();
-
-            var sd = new StringBuilder($"CREATE TABLE {sourceSchema}.\"{table}\" (\n");
-            sd.AppendLine(string.Join(",\n", sourceTableCols.Select(c => $"    \"{c.ColumnName}\" {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
-            sd.AppendLine(");");
-
-            var td = new StringBuilder($"CREATE TABLE {targetSchema}.\"{table}\" (\n");
-            td.AppendLine(string.Join(",\n", targetTableCols.Select(c => $"    \"{c.ColumnName}\" {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}")));
-            td.AppendLine(");");
-
             var diff = new StringBuilder();
-
-            var targetColNames = targetTableCols.Select(c => c.ColumnName).ToList();
-            var sourceColNames = sourceTableCols.Select(c => c.ColumnName).ToList();
-
-            var addedColNames = sourceColNames.Except(targetColNames);
-            foreach (var colName in addedColNames)
-            {
-                var col = sourceTableCols.First(c => c.ColumnName == colName);
+            
+            // Simplified column additions/removals
+            foreach (var col in sourceTableCols.Where(sc => !targetTableCols.Any(tc => tc.ColumnName == sc.ColumnName)))
                 diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {col.DataType}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
-            }
-
-            var removedColNames = targetColNames.Except(sourceColNames);
-            foreach (var colName in removedColNames)
-            {
+            
+            foreach (var colName in targetTableCols.Select(tc => tc.ColumnName).Except(sourceTableCols.Select(sc => sc.ColumnName)))
                 diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" DROP COLUMN \"{colName}\";");
-            }
-
-            var commonColNames = targetColNames.Intersect(sourceColNames);
-            foreach (var colName in commonColNames)
-            {
-                var targetCol = targetTableCols.First(c => c.ColumnName == colName);
-                var sourceCol = sourceTableCols.First(c => c.ColumnName == colName);
-
-                if (targetCol.DataType != sourceCol.DataType || targetCol.CharacterMaximumLength != sourceCol.CharacterMaximumLength)
-                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{colName}\" TYPE {sourceCol.DataType}{(sourceCol.CharacterMaximumLength != null ? $"({sourceCol.CharacterMaximumLength})" : "")};");
-
-                if (targetCol.IsNullable == "YES" && sourceCol.IsNullable == "NO")
-                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" SET NOT NULL;");
-                else if (targetCol.IsNullable == "NO" && sourceCol.IsNullable == "YES")
-                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" DROP NOT NULL;");
-
-                if (targetCol.ColumnDefault != sourceCol.ColumnDefault)
-                {
-                    if (string.IsNullOrEmpty(sourceCol.ColumnDefault))
-                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{colName}\" DROP DEFAULT;");
-                    else
-                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{colName}\" SET DEFAULT {sourceCol.ColumnDefault};");
-                }
-            }
-
+            
             if (diff.Length > 0)
-            {
-                results.Add(new SchemaDiffResult {
-                    ObjectType = "Table",
-                    ObjectName = table,
-                    DiffType = "Altered",
-                    SourceDDL = sd.ToString(),
-                    TargetDDL = td.ToString(),
-                    DiffScript = diff.ToString()
-                });
-            }
+                categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Altered", DiffScript = diff.ToString() });
         }
 
-        // --- View Comparison ---
+        // --- Category: View ---
         var addedViews = sourceViews.Keys.Except(targetViews.Keys);
-        foreach (var v in addedViews) {
-            results.Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", SourceDDL = sourceViews[v], TargetDDL = "-- N/A", DiffScript = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".") });
-        }
-        var removedViews = targetViews.Keys.Except(sourceViews.Keys);
-        foreach (var v in removedViews) {
-            results.Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = targetViews[v], DiffScript = $"-- View \"{v}\" was removed from Source. To remove from Target, run manually: DROP VIEW IF EXISTS {targetSchema}.{v} CASCADE;" });
-        }
+        foreach (var v in addedViews) categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", DiffScript = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".") });
         var commonViews = targetViews.Keys.Intersect(sourceViews.Keys);
         foreach (var v in commonViews) {
             string sourceDef = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetViews[v] != sourceDef) {
-                results.Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Altered", SourceDDL = sourceViews[v], TargetDDL = targetViews[v], DiffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef.Substring(sourceDef.IndexOf(" AS ", StringComparison.OrdinalIgnoreCase) + 4)}" });
-            }
+            if (targetViews[v] != sourceDef) categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Altered", DiffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef.Substring(sourceDef.IndexOf(" AS ", StringComparison.OrdinalIgnoreCase) + 4)}" });
         }
 
-        // --- Routine Comparison ---
+        // --- Category: Routine ---
         var addedRoutines = sourceRoutines.Keys.Except(targetRoutines.Keys);
-        foreach (var r in addedRoutines) {
-            results.Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", SourceDDL = sourceRoutines[r], TargetDDL = "-- N/A", DiffScript = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".") });
-        }
-        var removedRoutines = targetRoutines.Keys.Except(sourceRoutines.Keys);
-        foreach (var r in removedRoutines) {
-            results.Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = targetRoutines[r], DiffScript = $"-- Routine \"{r}\" was removed from Source. To remove from Target, run manually: DROP FUNCTION IF EXISTS {targetSchema}.{r} CASCADE;" });
-        }
+        foreach (var r in addedRoutines) categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", DiffScript = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".") });
         var commonRoutines = targetRoutines.Keys.Intersect(sourceRoutines.Keys);
-        foreach (var r in commonRoutines) {
-            string sourceDef = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetRoutines[r] != sourceDef) {
-                results.Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", SourceDDL = sourceRoutines[r], TargetDDL = targetRoutines[r], DiffScript = sourceDef });
-            }
-        }
+        foreach (var r in commonRoutines) 
+            if (targetRoutines[r] != sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + "."))
+                categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", DiffScript = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".") });
 
-        // --- Index Comparison ---
-        await CompareGenericObjectsAsync(results, "Index", targetIndexes, sourceIndexes, targetSchema);
+        // --- Category: Materialized View ---
+        foreach (var name in sourceMatViews.Keys.Except(targetMatViews.Keys)) categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", DiffScript = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".") });
 
-        // --- Trigger Comparison ---
-        await CompareGenericObjectsAsync(results, "Trigger", targetTriggers, sourceTriggers, targetSchema);
+        // --- Categories: Index, Constraint, Trigger ---
+        await CompareGenericObjectsAsync(categoryResults["Index"], "Index", targetIndexes, sourceIndexes, targetSchema);
+        await CompareGenericObjectsAsync(categoryResults["Trigger"], "Trigger", targetTriggers, sourceTriggers, targetSchema);
+        await CompareGenericObjectsAsync(categoryResults["Constraint"], "Constraint", targetConstraints, sourceConstraints, targetSchema);
 
-        // --- Constraint Comparison ---
-        await CompareGenericObjectsAsync(results, "Constraint", targetConstraints, sourceConstraints, targetSchema);
-
-        // --- Extension Comparison ---
-        foreach (var ext in sourceExtensions.Keys.Except(targetExtensions.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Added", SourceDDL = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';", TargetDDL = "-- N/A", DiffScript = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';" });
-        }
-        foreach (var ext in targetExtensions.Keys.Except(sourceExtensions.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = $"CREATE EXTENSION \"{ext}\" VERSION '{targetExtensions[ext]}';", DiffScript = $"-- Extension \"{ext}\" was removed from Source. To remove from Target, run manually: DROP EXTENSION IF EXISTS \"{ext}\";" });
-        }
-        foreach (var ext in targetExtensions.Keys.Intersect(sourceExtensions.Keys))
-        {
-            if (targetExtensions[ext] != sourceExtensions[ext])
-            {
-                results.Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Altered", SourceDDL = $"VERSION '{sourceExtensions[ext]}'", TargetDDL = $"VERSION '{targetExtensions[ext]}'", DiffScript = $"ALTER EXTENSION \"{ext}\" UPDATE TO '{sourceExtensions[ext]}';" });
-            }
-        }
-
-        // --- Role Comparison ---
-        foreach (var role in sourceRoles.Keys.Except(targetRoles.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Role", ObjectName = role, DiffType = "Added", SourceDDL = sourceRoles[role], TargetDDL = "-- N/A", DiffScript = sourceRoles[role] });
-        }
-        foreach (var role in targetRoles.Keys.Except(sourceRoles.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Role", ObjectName = role, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = targetRoles[role], DiffScript = $"-- Role \"{role}\" was removed from Source. To remove from Target, run manually: DROP ROLE IF EXISTS \"{role}\";" });
-        }
-        foreach (var role in targetRoles.Keys.Intersect(sourceRoles.Keys))
-        {
-            if (targetRoles[role] != sourceRoles[role])
-            {
-                results.Add(new SchemaDiffResult { ObjectType = "Role", ObjectName = role, DiffType = "Altered", SourceDDL = sourceRoles[role], TargetDDL = targetRoles[role], DiffScript = sourceRoles[role].Replace("CREATE ROLE", "ALTER ROLE") });
-            }
-        }
-
-        // --- Sequence Comparison ---
-        await CompareGenericObjectsAsync(results, "Sequence", targetSequences, sourceSequences, targetSchema);
-
-        // --- Enum Comparison ---
-        foreach (var name in sourceEnums.Keys.Except(targetEnums.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Enum", ObjectName = name, DiffType = "Added", SourceDDL = sourceEnums[name], TargetDDL = "-- N/A", DiffScript = sourceEnums[name] });
-        }
-        foreach (var name in targetEnums.Keys.Except(sourceEnums.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Enum", ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = targetEnums[name], DiffScript = $"-- Enum \"{name}\" was removed from Source. To remove from Target, run manually: DROP TYPE IF EXISTS {targetSchema}.{name};" });
-        }
-        foreach (var name in targetEnums.Keys.Intersect(sourceEnums.Keys))
-        {
-            if (targetEnums[name] != sourceEnums[name])
-            {
-                // Note: Altering enums is restricted in PG (can add values but not remove easily).
-                // Simplified approach: recommend manual recreation or adding values.
-                results.Add(new SchemaDiffResult { ObjectType = "Enum", ObjectName = name, DiffType = "Altered", SourceDDL = sourceEnums[name], TargetDDL = targetEnums[name], DiffScript = $"-- WARNING: Enum \"{name}\" differs in values. Re-creating or syncing enum values is manual in this tool.\n-- Desired: {sourceEnums[name]}" });
-            }
-        }
-
-        // --- Materialized View Comparison ---
-        foreach (var name in sourceMatViews.Keys.Except(targetMatViews.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", SourceDDL = sourceMatViews[name], TargetDDL = "-- N/A", DiffScript = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".") });
-        }
-        foreach (var name in targetMatViews.Keys.Except(sourceMatViews.Keys))
-        {
-            results.Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = "-- N/A", TargetDDL = targetMatViews[name], DiffScript = $"-- Materialized View \"{name}\" was removed from Source. To remove from Target, run manually: DROP MATERIALIZED VIEW IF EXISTS {targetSchema}.{name} CASCADE;" });
-        }
-        foreach (var name in targetMatViews.Keys.Intersect(sourceMatViews.Keys))
-        {
-            string sourceDef = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetMatViews[name] != sourceDef)
-            {
-                results.Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Altered", SourceDDL = sourceMatViews[name], TargetDDL = targetMatViews[name], DiffScript = $"DROP MATERIALIZED VIEW IF EXISTS {targetSchema}.{name} CASCADE;\n{sourceDef}" });
-            }
-        }
-
-        return results;
+        // Combine all in logical order
+        var finalResults = new List<SchemaDiffResult>();
+        string[] order = { "Extension", "Role", "Enum", "Sequence", "Table", "View", "Routine", "Materialized View", "Index", "Constraint", "Trigger" };
+        foreach (var cat in order) finalResults.AddRange(categoryResults[cat]);
+        
+        return finalResults;
     }
 
     private async Task CompareGenericObjectsAsync(List<SchemaDiffResult> results, string type, Dictionary<string, string> oldObjs, Dictionary<string, string> newObjs, string targetSchema)
@@ -375,26 +217,53 @@ public class DatabaseCompareService
         if (options.IgnoreColumns.Any()) sb.AppendLine($"-- Ignoring: {string.Join(", ", options.IgnoreColumns)}");
         sb.AppendLine();
 
-        foreach (var table in tablesToCompare)
+        // 1. Analyze dependencies and sort tables
+        var deps = await GetTableDependenciesAsync(_sourceConfig, sourceSchema);
+        var sortedTables = SortTablesTopologically(tablesToCompare, deps);
+
+        // 2. PASS 1: Deletes (Reverse order: Child tables first)
+        sb.AppendLine("-- === STEP 1: DELETES (Child to Parent) ===");
+        var reversedTables = new List<string>(sortedTables);
+        reversedTables.Reverse();
+        foreach (var table in reversedTables)
         {
             var pks = await GetPrimaryKeysAsync(_sourceConfig, table, sourceSchema);
-            if (!pks.Any())
-            {
-                sb.AppendLine($"-- WARNING: Table {table} has no primary key. Data comparison skipped.");
-                sb.AppendLine();
-                continue;
-            }
+            if (!pks.Any()) continue;
 
             var oldData = await GetTableDataAsync(_targetConfig, table, pks, targetSchema, options.WhereClause);
             var newData = await GetTableDataAsync(_sourceConfig, table, pks, sourceSchema, options.WhereClause);
+            var deletedKeys = oldData.Keys.Except(newData.Keys).ToList();
 
-            var oldKeys = oldData.Keys.ToList();
-            var newKeys = newData.Keys.ToList();
-
-            // Inserted
-            var insertedKeys = newKeys.Except(oldKeys).ToList();
-            if (insertedKeys.Any())
+            if (deletedKeys.Any())
             {
+                sb.AppendLine($"-- Table {table}: Deleting {deletedKeys.Count} records");
+                foreach (var key in deletedKeys)
+                {
+                    var conditions = string.Join(" AND ", pks.Select(pk => $"\"{pk}\" = {FormatSqlValue(oldData[key][pk])}"));
+                    sb.AppendLine($"DELETE FROM {targetSchema}.\"{table}\" WHERE {conditions};");
+                }
+                sb.AppendLine();
+            }
+        }
+
+        // 3. PASS 2: Inserts and Updates (Forward order: Parent tables first)
+        sb.AppendLine("-- === STEP 2: INSERTS & UPDATES (Parent to Child) ===");
+        foreach (var table in sortedTables)
+        {
+            var pks = await GetPrimaryKeysAsync(_sourceConfig, table, sourceSchema);
+            if (!pks.Any()) continue;
+
+            var oldData = await GetTableDataAsync(_targetConfig, table, pks, targetSchema, options.WhereClause);
+            var newData = await GetTableDataAsync(_sourceConfig, table, pks, sourceSchema, options.WhereClause);
+            
+            var insertedKeys = newData.Keys.Except(oldData.Keys).ToList();
+            var commonKeys = newData.Keys.Intersect(oldData.Keys).ToList();
+
+            if (insertedKeys.Any() || commonKeys.Any(k => GetUpdatesForCommonKey(newData[k], oldData[k], options.IgnoreColumns).Any()))
+            {
+                sb.AppendLine($"-- Table {table}: Processing Inserts/Updates");
+                
+                // Inserts
                 foreach (var key in insertedKeys)
                 {
                     var row = newData[key];
@@ -412,47 +281,34 @@ public class DatabaseCompareService
                         sb.AppendLine($"INSERT INTO {targetSchema}.\"{table}\" ({string.Join(", ", colNames.Select(c => $"\"{c}\""))}) VALUES ({string.Join(", ", colVals)});");
                     }
                 }
-            }
 
-            // Deleted
-            var deletedKeys = oldKeys.Except(newKeys).ToList();
-            if (deletedKeys.Any())
-            {
-                foreach (var key in deletedKeys)
+                // Updates
+                foreach (var key in commonKeys)
                 {
-                    var conditions = string.Join(" AND ", pks.Select(pk => $"\"{pk}\" = {FormatSqlValue(oldData[key][pk])}"));
-                    sb.AppendLine($"DELETE FROM {targetSchema}.\"{table}\" WHERE {conditions};");
-                }
-            }
+                    var oldRow = oldData[key];
+                    var newRow = newData[key];
+                    var changedCols = GetUpdatesForCommonKey(newRow, oldRow, options.IgnoreColumns);
 
-            // Updated
-            var commonKeys = oldKeys.Intersect(newKeys).ToList();
-            foreach (var key in commonKeys)
-            {
-                var oldRow = oldData[key];
-                var newRow = newData[key];
-                var changedCols = GetUpdatesForCommonKey(oldRow, newRow, options.IgnoreColumns);
-
-                if (changedCols.Any())
-                {
-                    if (options.UseUpsert)
+                    if (changedCols.Any())
                     {
-                        var colNames = newRow.Keys.Where(c => !options.IgnoreColumns.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
-                        var colVals = colNames.Select(c => FormatSqlValue(newRow[c])).ToList();
-                        var updates = colNames.Where(c => !pks.Contains(c, StringComparer.OrdinalIgnoreCase))
-                                              .Select(c => $"\"{c}\" = EXCLUDED.\"{c}\"");
-                        sb.AppendLine($"INSERT INTO {targetSchema}.\"{table}\" ({string.Join(", ", colNames.Select(c => $"\"{c}\""))}) VALUES ({string.Join(", ", colVals)}) ON CONFLICT ({string.Join(", ", pks.Select(pk => $"\"{pk}\""))}) DO UPDATE SET {string.Join(", ", updates)};");
-                    }
-                    else
-                    {
-                        var updates = changedCols.Select(col => $"\"{col}\" = {FormatSqlValue(newRow[col])}");
-                        var conditions = string.Join(" AND ", pks.Select(pk => $"\"{pk}\" = {FormatSqlValue(oldRow[pk])}"));
-                        sb.AppendLine($"UPDATE {targetSchema}.\"{table}\" SET {string.Join(", ", updates)} WHERE {conditions};");
+                        if (options.UseUpsert)
+                        {
+                            var colNames = newRow.Keys.Where(c => !options.IgnoreColumns.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+                            var colVals = colNames.Select(c => FormatSqlValue(newRow[c])).ToList();
+                            var updates = colNames.Where(c => !pks.Contains(c, StringComparer.OrdinalIgnoreCase))
+                                                  .Select(c => $"\"{c}\" = EXCLUDED.\"{c}\"");
+                            sb.AppendLine($"INSERT INTO {targetSchema}.\"{table}\" ({string.Join(", ", colNames.Select(c => $"\"{c}\""))}) VALUES ({string.Join(", ", colVals)}) ON CONFLICT ({string.Join(", ", pks.Select(pk => $"\"{pk}\""))}) DO UPDATE SET {string.Join(", ", updates)};");
+                        }
+                        else
+                        {
+                            var updates = changedCols.Select(col => $"\"{col}\" = {FormatSqlValue(newRow[col])}");
+                            var conditions = string.Join(" AND ", pks.Select(pk => $"\"{pk}\" = {FormatSqlValue(oldRow[pk])}"));
+                            sb.AppendLine($"UPDATE {targetSchema}.\"{table}\" SET {string.Join(", ", updates)} WHERE {conditions};");
+                        }
                     }
                 }
+                sb.AppendLine();
             }
-            if (insertedKeys.Any() || deletedKeys.Any() || commonKeys.Any(k => GetUpdatesForCommonKey(oldData[k], newData[k], options.IgnoreColumns).Any()))
-                 sb.AppendLine();
         }
 
         return sb.ToString();
@@ -910,6 +766,59 @@ public class DatabaseCompareService
             dict[name] = $"CREATE MATERIALIZED VIEW {schemaName}.{name} AS {def}";
         }
         return dict;
+    }
+
+    private async Task<List<(string Table, string DependsOn)>> GetTableDependenciesAsync(DatabaseConfig config, string schemaName)
+    {
+        var deps = new List<(string Table, string DependsOn)>();
+        await using var conn = new NpgsqlConnection(config.GetConnectionString());
+        await conn.OpenAsync();
+        var sql = @"
+            SELECT 
+                c1.relname as table_name,
+                c2.relname as foreign_table_name
+            FROM 
+                pg_constraint con
+            JOIN pg_class c1 ON con.conrelid = c1.oid
+            JOIN pg_class c2 ON con.confrelid = c2.oid
+            JOIN pg_namespace n ON con.connamespace = n.oid
+            WHERE 
+                con.contype = 'f' 
+                AND n.nspname = $1;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            deps.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        return deps;
+    }
+
+    private List<string> SortTablesTopologically(IEnumerable<string> tables, List<(string Table, string DependsOn)> dependencies)
+    {
+        var sorted = new List<string>();
+        var visited = new HashSet<string>();
+        var visiting = new HashSet<string>();
+        var tableSet = new HashSet<string>(tables);
+
+        void Visit(string table)
+        {
+            if (visited.Contains(table)) return;
+            if (visiting.Contains(table)) return; // Cycle detected, ignore for simple sort
+
+            visiting.Add(table);
+            foreach (var dep in dependencies.Where(d => d.Table == table && tableSet.Contains(d.DependsOn)))
+            {
+                Visit(dep.DependsOn);
+            }
+            visiting.Remove(table);
+            visited.Add(table);
+            sorted.Add(table);
+        }
+
+        foreach (var t in tables) Visit(t);
+        return sorted;
     }
 
     private class ColumnInfo

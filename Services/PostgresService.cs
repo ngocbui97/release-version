@@ -84,7 +84,7 @@ public class PostgresService
         await using var conn = new NpgsqlConnection(connStr);
         await conn.OpenAsync();
 
-        var sql = "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name;";
+        var sql = "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') ORDER BY c.relname;";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -147,6 +147,271 @@ public class PostgresService
             routines.Add(reader.GetString(0));
         }
         return routines;
+    }
+
+    public async Task<List<(string Table, string Column)>> GetSchemaColumnsAsync(string dbName, string schemaName)
+    {
+        var cols = new List<(string, string)>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = $1 ORDER BY table_name, column_name;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) cols.Add((reader.GetString(0), reader.GetString(1)));
+        return cols;
+    }
+
+    public async Task<List<string>> GetSchemaIndexesAsync(string dbName, string schemaName)
+    {
+        var indexes = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('i', 'I') AND n.nspname = $1 ORDER BY c.relname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) indexes.Add(reader.GetString(0));
+        return indexes;
+    }
+
+    public async Task<List<string>> GetSchemaTypesAsync(string dbName, string schemaName)
+    {
+        var types = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = $1 AND t.typtype IN ('b', 'c', 'e', 'm', 'r') AND t.typname NOT LIKE '\\_%' ORDER BY typname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) types.Add(reader.GetString(0));
+        return types;
+    }
+
+    public async Task<List<string>> GetRolesAsync(string dbName)
+    {
+        var roles = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT rolname FROM pg_roles WHERE rolname NOT LIKE 'pg_%' AND rolname NOT LIKE 'rds%' ORDER BY rolname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) roles.Add(reader.GetString(0));
+        return roles;
+    }
+
+    public async Task<List<(string Table, string Trigger)>> GetSchemaTriggersAsync(string dbName, string schemaName)
+    {
+        var triggers = new List<(string, string)>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = @"SELECT c.relname, t.tgname FROM pg_trigger t 
+                    JOIN pg_class c ON c.oid = t.tgrelid 
+                    JOIN pg_namespace n ON n.oid = c.relnamespace 
+                    WHERE n.nspname = $1 AND t.tgisinternal = false 
+                    ORDER BY t.tgname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) triggers.Add((reader.GetString(0), reader.GetString(1)));
+        return triggers;
+    }
+
+    public async Task<List<(string Table, string Constraint)>> GetSchemaConstraintsAsync(string dbName, string schemaName)
+    {
+        var constraints = new List<(string, string)>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = @"SELECT 
+                        COALESCE(c.relname, 'Domain: ' || t.typname) as parent, 
+                        con.conname 
+                    FROM pg_constraint con 
+                    JOIN pg_namespace n ON n.oid = con.connamespace 
+                    LEFT JOIN pg_class c ON c.oid = con.conrelid 
+                    LEFT JOIN pg_type t ON t.oid = con.contypid 
+                    WHERE n.nspname = $1 
+                    ORDER BY con.conname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) constraints.Add((reader.GetString(0), reader.GetString(1)));
+        return constraints;
+    }
+
+    public async Task<List<string>> GetSchemaPartitionsAsync(string dbName, string schemaName)
+    {
+        var parts = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = @"SELECT c.relname FROM pg_class c 
+                    JOIN pg_namespace n ON n.oid = c.relnamespace 
+                    WHERE n.nspname = $1 AND (c.relkind = 'p' OR c.relispartition = true) 
+                    ORDER BY c.relname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) parts.Add(reader.GetString(0));
+        return parts;
+    }
+
+    public async Task<List<string>> GetSchemaMatViewsAsync(string dbName, string schemaName)
+    {
+        var views = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'm' AND n.nspname = $1 ORDER BY c.relname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) views.Add(reader.GetString(0));
+        return views;
+    }
+
+    public async Task<List<string>> GetSchemaSequencesAsync(string dbName, string schemaName)
+    {
+        var seqs = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'S' AND n.nspname = $1 ORDER BY c.relname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) seqs.Add(reader.GetString(0));
+        return seqs;
+    }
+
+    public async Task<List<string>> GetSchemaDomainsAsync(string dbName, string schemaName)
+    {
+        var domains = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = $1 AND t.typtype = 'd' ORDER BY typname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) domains.Add(reader.GetString(0));
+        return domains;
+    }
+
+    public async Task<string> GetObjectCommentAsync(string dbName, string schemaName, string objectName, JunkType type)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        string sql = "";
+        
+        switch (type) {
+            case JunkType.Table:
+            case JunkType.View:
+            case JunkType.MaterializedView:
+            case JunkType.Sequence:
+            case JunkType.Index:
+            case JunkType.Partition:
+                sql = "SELECT obj_description(c.oid, 'pg_class') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 LIMIT 1;";
+                break;
+            case JunkType.Routine:
+                sql = "SELECT obj_description(p.oid, 'pg_proc') FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = $2 LIMIT 1;";
+                break;
+            case JunkType.Trigger:
+                sql = "SELECT obj_description(t.oid, 'pg_trigger') FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND t.tgname = $2 LIMIT 1;";
+                break;
+            case JunkType.Constraint:
+                sql = "SELECT obj_description(con.oid, 'pg_constraint') FROM pg_constraint con JOIN pg_namespace n ON n.oid = con.connamespace WHERE n.nspname = $1 AND con.conname = $2 LIMIT 1;";
+                break;
+            case JunkType.Role:
+                sql = "SELECT obj_description(r.oid, 'pg_authid') FROM pg_roles r WHERE r.rolname = $1 LIMIT 1;";
+                return await GetGlobalCommentAsync(dbName, objectName, "pg_authid");
+            default:
+                return "";
+        }
+
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        cmd.Parameters.AddWithValue(objectName);
+        var res = await cmd.ExecuteScalarAsync();
+        return res?.ToString() ?? "";
+    }
+
+    private async Task<string> GetGlobalCommentAsync(string dbName, string objectName, string typeName)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = $"SELECT obj_description(oid, '{typeName}') FROM pg_roles WHERE rolname = $1 LIMIT 1;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(objectName);
+        var res = await cmd.ExecuteScalarAsync();
+        return res?.ToString() ?? "";
+    }
+
+    public async Task<string> GetObjectDefinitionAsync(string dbName, string schemaName, string objectName, JunkType type)
+    {
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        string sql = "";
+        
+        switch (type) {
+            case JunkType.Routine: 
+                sql = "SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proname = $2 LIMIT 1;"; 
+                break;
+            case JunkType.View: 
+            case JunkType.MaterializedView:
+                sql = "SELECT 'CREATE OR REPLACE ' || (CASE WHEN c.relkind = 'm' THEN 'MATERIALIZED VIEW ' ELSE 'VIEW ' END) || n.nspname || '.' || c.relname || ' AS\n' || pg_get_viewdef(c.oid, true) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 LIMIT 1;";
+                break;
+            case JunkType.Trigger:
+                sql = "SELECT pg_get_triggerdef(t.oid, true) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND t.tgname = $2 LIMIT 1;";
+                break;
+            case JunkType.Index:
+                sql = "SELECT pg_get_indexdef(c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 LIMIT 1;";
+                break;
+            case JunkType.Constraint:
+                sql = "SELECT pg_get_constraintdef(con.oid, true) FROM pg_constraint con JOIN pg_namespace n ON n.oid = con.connamespace WHERE n.nspname = $1 AND con.conname = $2 LIMIT 1;";
+                break;
+            case JunkType.Table:
+            case JunkType.Partition:
+                // Simplified DDL for Table/Partition name only (getting full DDL is complex without pg_dump)
+                return $"-- Table/Partition: {schemaName}.{objectName}\n-- (Deep Scan check name only for now)";
+            default:
+                return $"-- Definition for {type}: {schemaName}.{objectName}";
+        }
+
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        cmd.Parameters.AddWithValue(objectName);
+        var result = await cmd.ExecuteScalarAsync();
+        return result?.ToString() ?? $"-- No definition found for {type} {schemaName}.{objectName}";
+    }
+
+    public async Task<List<string>> GetSchemaAggregatesAsync(string dbName, string schemaName)
+    {
+        var aggs = new List<string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+        var sql = "SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.proisagg = true ORDER BY proname;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        try {
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) aggs.Add(reader.GetString(0));
+        } catch { /* proisagg was changed to prokind in recent postgres version */
+            await using var cmd2 = new NpgsqlCommand("SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 AND p.prokind = 'a' ORDER BY proname;", conn);
+            cmd2.Parameters.AddWithValue(schemaName);
+            await using var reader2 = await cmd2.ExecuteReaderAsync();
+            while (await reader2.ReadAsync()) aggs.Add(reader2.GetString(0));
+        }
+        return aggs;
     }
 
     public async Task<long> GetTableRowCountAsync(string tableName, string schemaName = "public")
@@ -359,6 +624,32 @@ public class PostgresService
         }
         
         return results;
+    }
+
+    public async Task<Dictionary<string, string>> GetFullRowDataAsync(string dbName, string schemaName, string tableName, string pkColumn, string pkValue)
+    {
+        var row = new Dictionary<string, string>();
+        var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={dbName}";
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
+
+        // Get all columns for the table
+        var sql = $"SELECT * FROM {schemaName}.\"{tableName}\" WHERE \"{pkColumn}\" = @pk LIMIT 1;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("pk", pkValue);
+
+        try {
+            await using var reader = await cmd.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                for (int i = 0; i < reader.FieldCount; i++)
+                {
+                    row[reader.GetName(i)] = reader[i]?.ToString() ?? "NULL";
+                }
+            }
+        } catch { }
+
+        return row;
     }
 
     private async Task RunPostgresToolAsync(string toolName, string arguments, Action<string>? onOutput = null)

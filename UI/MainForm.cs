@@ -44,7 +44,6 @@ namespace ReleasePrepTool.UI
         private Button btnExecuteSchema = null!, btnExecuteData = null!;
         private TextBox txtDbDiffLog = null!, txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!;
         private RichTextBox txtSourceDdl = null!, txtTargetDdl = null!;
-        private DataGridView dgvJunkData = null!;
         private TextBox txtIgnoreColumns = null!, txtDataFilter = null!;
         private CheckBox chkUseUpsert = null!;
         private List<SchemaDiffResult> _schemaDiffs = new List<SchemaDiffResult>();
@@ -65,7 +64,6 @@ namespace ReleasePrepTool.UI
         private TreeView tvJunkResults = null!;
         private TabControl tcJunkResults = null!;
         private DataGridView dgvJunkDataResults = null!;
-        private RichTextBox txtJunkScript = null!;
         private SplitContainer splitJunk = null!;
         private Button btnAnalyzeJunk = null!, btnCleanJunk = null!, btnGenerateJunkScript = null!;
         private JunkAnalysisService? _junkService;
@@ -483,62 +481,96 @@ namespace ReleasePrepTool.UI
 
             // 6. Clean Junk Tab (Redesigned)
             var tabCleanJunk = new TabPage("6. Clean Junk");
-            splitJunk = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 220, SplitterWidth = 5 };
-            
             // Top Panel: Configuration (Target selection, Keywords, and DB/Schema Tree)
-            var pnlJunkConfig = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Padding = new Padding(15) };
-            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35f)); // Connection & Keywords
-            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45f)); // Selection Tree
-            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20f)); // Action Buttons
+            var pnlJunkConfig = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 3, RowCount = 1, Padding = new Padding(1) };
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33f)); // Connection & Keywords
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34f)); // Selection Tree
+            pnlJunkConfig.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33f)); // Action Buttons
+            pnlJunkConfig.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            // Cell 1: Connection & Keywords
-            var pnlJunkBasics = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
-            pnlJunkBasics.Controls.Add(new Label { Text = "1. Connection Source:", Width = 200, Font = new Font(this.Font, FontStyle.Bold) });
-            cmbJunkConnection = new ComboBox { Width = 220, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 5, 0, 15) };
+            // Group 1: Connection & Keywords
+            var gbJunkBasics = new GroupBox { Text = "1. Setup & Patterns", Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.FromArgb(0, 120, 212), Padding = new Padding(4, 2, 4, 3) };
+            var pnlJunkBasics = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, FlowDirection = FlowDirection.TopDown, Padding = new Padding(0, 0, 0, 4) };
+            
+            pnlJunkBasics.Controls.Add(new Label { Text = "Connection Source:", AutoSize = true, Font = new Font(this.Font, FontStyle.Regular), ForeColor = Color.Black, Margin = new Padding(0, 0, 0, 0) });
+            cmbJunkConnection = new ComboBox { Width = 250, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(0, 0, 0, 2) };
             cmbJunkConnection.Items.AddRange(new string[] { "Source (Dev)", "Target (Prod)", "Custom Connection..." });
             pnlJunkBasics.Controls.Add(cmbJunkConnection);
             
-            pnlJunkBasics.Controls.Add(new Label { Text = "2. Junk Patterns (comma separated):", Width = 250, Font = new Font(this.Font, FontStyle.Bold) });
-            txtJunkKeywords = new TextBox { Width = 220, Text = "test, dev, tmp, 123", Margin = new Padding(0, 5, 0, 15) };
+            pnlJunkBasics.Controls.Add(new Label { Text = "Junk Keywords (CSV):", AutoSize = true, Font = new Font(this.Font, FontStyle.Regular), ForeColor = Color.Black, Margin = new Padding(0, 0, 0, 0) });
+            txtJunkKeywords = new TextBox { Width = 250, Text = "test, dev, tmp, 123", Margin = new Padding(0, 0, 0, 4) };
             pnlJunkBasics.Controls.Add(txtJunkKeywords);
             
-            btnAnalyzeJunk = new Button { Text = "🔍 ANALYZE JUNK", Width = 220, Height = 45, Font = new Font(this.Font.FontFamily, 10f, FontStyle.Bold), BackColor = Color.LightSkyBlue, FlatStyle = FlatStyle.Flat };
+            btnAnalyzeJunk = new Button { Text = "🔍 ANALYZE JUNK", Width = 250, Height = 28, Font = new Font(this.Font.FontFamily, 9f, FontStyle.Bold), BackColor = Color.FromArgb(0, 120, 212), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnAnalyzeJunk.FlatAppearance.BorderSize = 0;
             btnAnalyzeJunk.Click += BtnAnalyzeJunk_Click;
             pnlJunkBasics.Controls.Add(btnAnalyzeJunk);
+            gbJunkBasics.Controls.Add(pnlJunkBasics);
 
-            // Cell 2: DB -> Schema Tree Selection
-            var pnlJunkSelection = new GroupBox { Text = "Selection Scope (Database > Schema)", Dock = DockStyle.Fill, Font = new Font(this.Font, FontStyle.Bold) };
-            tvJunkSelection = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, Font = new Font("Segoe UI", 9f, FontStyle.Regular), Margin = new Padding(5) };
+            // Group 2: DB -> Schema Tree Selection
+            var pnlJunkSelection = new GroupBox { Text = "2. Selection Scope", Dock = DockStyle.Fill, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.FromArgb(0, 120, 212), Padding = new Padding(4, 2, 4, 3) };
+            var pnlJunkSelectionInner = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 0, 4, 2) };
+            var pnlJunkSelectionLinks = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 22, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(4, 1, 0, 0) };
+            var lnkSelectAllJunk = new LinkLabel { Text = "Select All", AutoSize = true, Margin = new Padding(4, 2, 10, 0), LinkColor = Color.FromArgb(0, 120, 212), ActiveLinkColor = Color.FromArgb(16, 124, 16), Font = new Font(this.Font, FontStyle.Regular) };
+            var lnkUnselectAllJunk = new LinkLabel { Text = "Unselect All", AutoSize = true, Margin = new Padding(0, 2, 0, 0), LinkColor = Color.FromArgb(167, 167, 167), ActiveLinkColor = Color.FromArgb(216, 59, 1), Font = new Font(this.Font, FontStyle.Regular) };
+            
+            lnkSelectAllJunk.LinkClicked += (s, e) => SetAllJunkSelectionCheckState(true);
+            lnkUnselectAllJunk.LinkClicked += (s, e) => SetAllJunkSelectionCheckState(false);
+            
+            pnlJunkSelectionLinks.Controls.Add(lnkSelectAllJunk);
+            pnlJunkSelectionLinks.Controls.Add(lnkUnselectAllJunk);
+            
+            tvJunkSelection = new TreeView { 
+                Dock = DockStyle.Fill, 
+                CheckBoxes = true, 
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular), 
+                BorderStyle = BorderStyle.None,
+                Indent = 20,
+                ShowLines = true,
+                FullRowSelect = false
+            };
             tvJunkSelection.AfterCheck += TvJunkSelection_AfterCheck;
             tvJunkSelection.BeforeExpand += TvJunkSelection_BeforeExpand;
-            pnlJunkSelection.Controls.Add(tvJunkSelection);
-
-            // Cell 3: Actions
-            var pnlJunkGlobalActions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10, 0, 0, 0) };
             
-            btnGenerateJunkScript = new Button { Text = "📜 PREVIEW SCRIPT", Width = 160, Height = 34, Margin = new Padding(0, 0, 0, 10), BackColor = Color.WhiteSmoke };
+            pnlJunkSelectionInner.Controls.Add(tvJunkSelection);
+            pnlJunkSelectionInner.Controls.Add(pnlJunkSelectionLinks);
+            pnlJunkSelection.Controls.Add(pnlJunkSelectionInner);
+
+            // Group 3: Actions
+            var gbJunkActions = new GroupBox { Text = "3. Cleanup Actions", Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Font = new Font(this.Font, FontStyle.Bold), ForeColor = Color.FromArgb(0, 120, 212), Padding = new Padding(4, 2, 4, 3) };
+            var pnlJunkGlobalActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, FlowDirection = FlowDirection.TopDown, Padding = new Padding(0, 0, 0, 4) };
+            
+            btnGenerateJunkScript = new Button { Text = "📜 PREVIEW SCRIPT", Width = 250, Height = 28, Margin = new Padding(0, 2, 0, 6), BackColor = Color.FromArgb(243, 242, 241), ForeColor = Color.FromArgb(50, 49, 48), FlatStyle = FlatStyle.Flat, Font = new Font(this.Font, FontStyle.Bold), Cursor = Cursors.Hand };
+            btnGenerateJunkScript.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
             btnGenerateJunkScript.Click += BtnGenerateJunkScript_Click;
             
-            btnCleanJunk = new Button { Text = "🗑 CLEAN NOW!", Width = 160, Height = 45, BackColor = Color.MistyRose, Font = new Font(this.Font, FontStyle.Bold) };
+            btnCleanJunk = new Button { Text = "🗑 CLEAN NOW!", Width = 250, Height = 32, BackColor = Color.FromArgb(216, 59, 1), ForeColor = Color.White, Font = new Font(this.Font.FontFamily, 10.5f, FontStyle.Bold), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnCleanJunk.FlatAppearance.BorderSize = 0;
             btnCleanJunk.Click += BtnCleanJunk_Click;
             
             pnlJunkGlobalActions.Controls.Add(btnGenerateJunkScript);
             pnlJunkGlobalActions.Controls.Add(btnCleanJunk);
+            gbJunkActions.Controls.Add(pnlJunkGlobalActions);
 
-            pnlJunkConfig.Controls.Add(pnlJunkBasics, 0, 0);
+            pnlJunkConfig.Controls.Add(gbJunkBasics, 0, 0);
             pnlJunkConfig.Controls.Add(pnlJunkSelection, 1, 0);
-            pnlJunkConfig.Controls.Add(pnlJunkGlobalActions, 2, 0);
-            
-            splitJunk.Panel1.Controls.Add(pnlJunkConfig);
+            pnlJunkConfig.Controls.Add(gbJunkActions, 2, 0);
             
             // Bottom Panel: Results categorized by Tab (Structure vs Data Records)
-            var splitResults = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 550, SplitterWidth = 5 };
-            
             tcJunkResults = new TabControl { Dock = DockStyle.Fill };
             var tabStruct = new TabPage("1. Structure Cleanup");
             var tabData = new TabPage("2. Data Records Cleanup");
             
-            tvJunkResults = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, Font = new Font("Consolas", 9f), BorderStyle = BorderStyle.None };
+            tvJunkResults = new TreeView { 
+                Dock = DockStyle.Fill, 
+                CheckBoxes = true, 
+                Font = new Font("Consolas", 9f), 
+                BorderStyle = BorderStyle.None,
+                DrawMode = TreeViewDrawMode.OwnerDrawText
+            };
+            tvJunkResults.DrawNode += TvJunkResults_DrawNode;
+            tvJunkResults.AfterCheck += TvJunkResults_AfterCheck;
+            tvJunkResults.NodeMouseDoubleClick += TvJunkResults_NodeMouseDoubleClick;
             tabStruct.Controls.Add(tvJunkResults);
             
             dgvJunkDataResults = new DataGridView { 
@@ -561,18 +593,16 @@ namespace ReleasePrepTool.UI
             dgvJunkDataResults.Columns.Add("PK", "PK");
             dgvJunkDataResults.Columns.Add("Reason", "Reason/Value");
             
+            dgvJunkDataResults.CellDoubleClick += DgvJunkDataResults_CellDoubleClick;
+            dgvJunkDataResults.CellPainting += DgvJunkDataResults_CellPainting;
             tabData.Controls.Add(dgvJunkDataResults);
             
             tcJunkResults.TabPages.Add(tabStruct);
             tcJunkResults.TabPages.Add(tabData);
             
-            txtJunkScript = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.FromArgb(30, 30, 30), ForeColor = Color.LightGray, Font = new Font("Consolas", 10f), BorderStyle = BorderStyle.None };
-            
-            splitResults.Panel1.Controls.Add(tcJunkResults);
-            splitResults.Panel2.Controls.Add(txtJunkScript);
-            splitJunk.Panel2.Controls.Add(splitResults);
-            
-            tabCleanJunk.Controls.Add(splitJunk);
+            tabCleanJunk.Controls.Add(tcJunkResults);
+            tabCleanJunk.Controls.Add(pnlJunkConfig);
+            tcJunkResults.BringToFront();
 
             // Logic to populate when connection changes
             cmbJunkConnection.SelectedIndexChanged += async (s, e) => {
@@ -1745,21 +1775,30 @@ namespace ReleasePrepTool.UI
 
         private async void TvJunkSelection_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
         {
-            if (e.Node == null || e.Node.Nodes.Count != 1 || e.Node.Nodes[0].Tag?.ToString() != "DUMMY") return;
+            if (e.Node == null) return;
+            
+            // 1. Expand DB to show Schemas
+            if (e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag?.ToString() == "DUMMY" && e.Node.Tag?.ToString() == "DB")
+            {
+                e.Node.Nodes.Clear();
+                var service = GetActiveJunkPgService();
+                var dbName = e.Node.Text;
 
-            e.Node.Nodes.Clear();
-            var service = GetActiveJunkPgService();
-            var dbName = e.Node.Text;
-
-            try {
-                var schemas = await service.GetSchemasAsync(dbName);
-                foreach (var schema in schemas.OrderBy(s => s))
-                {
-                    var schemaNode = new TreeNode(schema) { Tag = "SCHEMA", Checked = e.Node.Checked };
-                    e.Node.Nodes.Add(schemaNode);
+                try {
+                    var schemas = await service.GetSchemasAsync(dbName);
+                    foreach (var schema in schemas.OrderBy(s => s))
+                    {
+                        var schemaNode = new TreeNode(schema) { Tag = "SCHEMA", Checked = e.Node.Checked };
+                        // Add sub-options for each schema
+                        var structNode = new TreeNode("Structure") { Tag = "STRUCT", Checked = schemaNode.Checked };
+                        var dataNode = new TreeNode("Data Records") { Tag = "DATA", Checked = schemaNode.Checked };
+                        schemaNode.Nodes.Add(structNode);
+                        schemaNode.Nodes.Add(dataNode);
+                        e.Node.Nodes.Add(schemaNode);
+                    }
+                } catch { 
+                    e.Node.Nodes.Add(new TreeNode("Error loading schemas") { ForeColor = Color.Red });
                 }
-            } catch { 
-                e.Node.Nodes.Add(new TreeNode("Error loading schemas") { ForeColor = Color.Red });
             }
         }
 
@@ -1768,45 +1807,63 @@ namespace ReleasePrepTool.UI
             if (e.Action == TreeViewAction.Unknown || e.Node == null) return;
 
             // Cascade check to children
-            foreach (TreeNode child in e.Node.Nodes)
-            {
-                child.Checked = e.Node.Checked;
-            }
+            SetTreeViewChecked(e.Node.Nodes, e.Node.Checked);
+            
+            // Selectively update parent state (simplification: if any child is checked, don't necessarily check parent)
+            // But we keep it simple for now as per user screenshot.
         }
 
         private async void BtnAnalyzeJunk_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
-            var keywords = txtJunkKeywords.Text.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).ToList();
+            var keywordStr = txtJunkKeywords.Text;
+            var keywords = keywordStr.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(k => k.Trim()).ToList();
             if (!keywords.Any()) { MessageBox.Show("Please enter junk keywords."); return; }
 
-            // Gather selected DBs and their selected schemas
-            var selectedScopes = new List<(string Db, List<string> Schemas)>();
+            // Gather granular selections
+            var selectedScopes = new List<(string Db, List<SchemaSelection> Selections)>();
             foreach (TreeNode dbNode in tvJunkSelection.Nodes)
             {
-                if (dbNode.Checked || dbNode.Nodes.Cast<TreeNode>().Any(n => n.Checked))
+                var schemaSelectionsForDb = new List<SchemaSelection>();
+                
+                // If DB is checked or has checked children
+                if (dbNode.Checked || dbNode.Nodes.Cast<TreeNode>().Any(n => n.Checked || n.Nodes.Cast<TreeNode>().Any(sn => sn.Checked)))
                 {
-                    var schemas = new List<string>();
-                    // If node wasn't expanded, we might need to load schemas here or assume all if DB checked
+                    // If dummy (not expanded), load schemas and assume all if DB checked
                     if (dbNode.Nodes.Count == 1 && dbNode.Nodes[0].Tag?.ToString() == "DUMMY")
                     {
                          if (dbNode.Checked) {
-                             // Auto-load if we're scanning the whole DB
                              var service = GetActiveJunkPgService();
-                             schemas = await service.GetSchemasAsync(dbNode.Text);
+                             var schemas = await service.GetSchemasAsync(dbNode.Text);
+                             foreach (var s in schemas)
+                                 schemaSelectionsForDb.Add(new SchemaSelection { SchemaName = s, IncludeStructure = true, IncludeData = true });
                          }
                     }
                     else 
                     {
-                        schemas = dbNode.Nodes.Cast<TreeNode>().Where(n => n.Checked).Select(n => n.Text).ToList();
+                        foreach (TreeNode schemaNode in dbNode.Nodes)
+                        {
+                            bool includeStruct = schemaNode.Checked || schemaNode.Nodes.Cast<TreeNode>().Any(sn => sn.Tag?.ToString() == "STRUCT" && sn.Checked);
+                            bool includeData = schemaNode.Checked || schemaNode.Nodes.Cast<TreeNode>().Any(sn => sn.Tag?.ToString() == "DATA" && sn.Checked);
+                            
+                            if (includeStruct || includeData)
+                            {
+                                schemaSelectionsForDb.Add(new SchemaSelection 
+                                { 
+                                    SchemaName = schemaNode.Text, 
+                                    IncludeStructure = includeStruct, 
+                                    IncludeData = includeData 
+                                });
+                            }
+                        }
                     }
 
-                    if (schemas.Any())
-                        selectedScopes.Add((dbNode.Text, schemas));
+                    if (schemaSelectionsForDb.Any())
+                        selectedScopes.Add((dbNode.Text, schemaSelectionsForDb));
                 }
             }
 
-            if (!selectedScopes.Any()) { MessageBox.Show("Please select at least one database/schema to analyze."); return; }
+            if (!selectedScopes.Any()) { MessageBox.Show("Please select at least one database/schema/type to analyze."); return; }
 
             btnAnalyzeJunk.Enabled = false;
             btnAnalyzeJunk.Text = "⌛ Analyzing...";
@@ -1817,13 +1874,11 @@ namespace ReleasePrepTool.UI
             try {
                 _junkService = new JunkAnalysisService(GetActiveJunkPgService());
                 
-                // We need to update AnalyzeAsync to handle specific schemas per DB if we want full precision.
                 foreach (var scope in selectedScopes)
                 {
-                    var dbResults = await _junkService.AnalyzeAsync(new[] { scope.Db }, keywords);
+                    var dbResults = await _junkService.AnalyzeAsync(new[] { scope.Db }, keywords, scope.Selections);
                     foreach (var res in dbResults)
                     {
-                        res.Items = res.Items.Where(i => scope.Schemas.Contains(i.SchemaName)).ToList();
                         if (res.Items.Any()) _lastJunkResults.Add(res);
                     }
                 }
@@ -1837,10 +1892,11 @@ namespace ReleasePrepTool.UI
                         var dbNode = new TreeNode($"Database: {res.DatabaseName}") { Tag = res.DatabaseName };
                         foreach (var item in structItems)
                         {
-                            var schemaNode = dbNode.Nodes.Cast<TreeNode>().FirstOrDefault(n => n.Text == item.SchemaName);
+                            string schemaLabel = string.IsNullOrEmpty(item.SchemaName) ? "(Database Objects)" : item.SchemaName;
+                            var schemaNode = dbNode.Nodes.Cast<TreeNode>().FirstOrDefault(n => n.Text == schemaLabel);
                             if (schemaNode == null)
                             {
-                                schemaNode = new TreeNode(item.SchemaName) { Tag = item.SchemaName };
+                                schemaNode = new TreeNode(schemaLabel) { Tag = item.SchemaName };
                                 dbNode.Nodes.Add(schemaNode);
                             }
                             
@@ -1851,7 +1907,8 @@ namespace ReleasePrepTool.UI
                                 schemaNode.Nodes.Add(typeNode);
                             }
 
-                            var itemNode = new TreeNode(item.ObjectName)
+                            // Show Name + Reason
+                            var itemNode = new TreeNode($"{item.ObjectName} ({item.DetectedContent})")
                             {
                                 Tag = item,
                                 Checked = true,
@@ -1865,19 +1922,31 @@ namespace ReleasePrepTool.UI
 
                     // 2. Populate Data Grid
                     var dataItems = res.Items.Where(i => i.Type == JunkType.DataRecord).ToList();
-                    foreach (var item in dataItems)
+                    
+                    // Group by PK to handle 1 record having junk in multiple columns
+                    var groupedData = dataItems.GroupBy(i => new { i.DatabaseName, i.SchemaName, i.ObjectName, i.PrimaryKeyValue });
+                    
+                    foreach (var group in groupedData)
                     {
-                        int rowIndex = dgvJunkDataResults.Rows.Add(true, res.DatabaseName, item.ObjectName, item.ColumnName, item.PrimaryKeyValue, item.DetectedContent);
-                        dgvJunkDataResults.Rows[rowIndex].Tag = item;
+                        var firstItem = group.First();
+                        
+                        // Combine column names if multiple columns matched
+                        string aggCols = string.Join(", ", group.Select(i => i.ColumnName).Distinct());
+                        
+                        // Combine actual values (RawData) instead of the "Found in..." reason string
+                        string aggVals = string.Join(" | ", group.Select(i => i.RawData?.Replace("\n", " ")?.Replace("\r", "")).Distinct());
+                        if (aggVals.Length > 200) aggVals = aggVals.Substring(0, 197) + "...";
+
+                        int rowIndex = dgvJunkDataResults.Rows.Add(true, firstItem.DatabaseName, firstItem.ObjectName, aggCols, firstItem.PrimaryKeyValue, aggVals);
+                        dgvJunkDataResults.Rows[rowIndex].Tag = firstItem; // Tagging with the first item is fully sufficient for generating the DELETE script
                     }
                 }
                 
-                if (!_lastJunkResults.Any()) MessageBox.Show("No junk found with these keywords!");
+                if (!_lastJunkResults.Any()) MessageBox.Show("No junk found with these keywords and selections!");
                 else
                 {
-                    // Auto-generate script preview
-                    BtnGenerateJunkScript_Click(null, null);
-                    // Switch to the tab with more results
+                    // Update: No longer auto-generate/show script in hidden field.
+                    // Just inform user or they can click Preview.
                     if (dgvJunkDataResults.Rows.Count > 0 && tvJunkResults.Nodes.Count == 0)
                         tcJunkResults.SelectedIndex = 1;
                 }
@@ -1891,41 +1960,311 @@ namespace ReleasePrepTool.UI
 
         private void BtnGenerateJunkScript_Click(object? sender, EventArgs e)
         {
-            if (_junkService == null || !_lastJunkResults.Any()) return;
+            if (_junkService == null || !_lastJunkResults.Any()) { MessageBox.Show("Please analyze junk first."); return; }
             var selectedItems = GetSelectedJunkItems();
-            if (!selectedItems.Any()) { MessageBox.Show("Select items in the tree view first."); return; }
+            if (!selectedItems.Any()) { MessageBox.Show("No junk items selected."); return; }
 
             var script = _junkService.GenerateCleanupScript(selectedItems);
-            txtJunkScript.Text = script;
+            
+            using (var editor = new JunkScriptEditorForm(script))
+            {
+                if (editor.ShowDialog() == DialogResult.OK)
+                {
+                    _lastEditedJunkScript = editor.EditedScript;
+                    BtnCleanJunk_Click(btnGenerateJunkScript, EventArgs.Empty);
+                }
+            }
         }
+
+        private string? _lastEditedJunkScript;
 
         private async void BtnCleanJunk_Click(object? sender, EventArgs e)
         {
-            if (!EnsureServicesInitialized()) return;
-            var selectedItems = GetSelectedJunkItems();
-            if (!selectedItems.Any()) { MessageBox.Show("Select items to clean first."); return; }
+            if (_junkService == null) return;
+            
+            string scriptToRun;
+            if (!string.IsNullOrEmpty(_lastEditedJunkScript))
+            {
+                scriptToRun = _lastEditedJunkScript;
+            }
+            else
+            {
+                var selectedItems = GetSelectedJunkItems();
+                if (!selectedItems.Any()) { MessageBox.Show("No junk items selected."); return; }
+                scriptToRun = _junkService.GenerateCleanupScript(selectedItems);
+            }
 
-            if (MessageBox.Show($"Are you sure you want to PERMANENTLY DELETE {selectedItems.Count} items from the database?", 
-                "Confirm Destruction", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            var confirm = MessageBox.Show("Are you sure you want to execute the cleanup script? This action cannot be undone.", "Confirm Cleanup", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes) return;
 
-            var service = GetActiveJunkPgService();
             btnCleanJunk.Enabled = false;
-            try {
-                foreach (var item in selectedItems)
+            try
+            {
+                var service = GetActiveJunkPgService();
+                await service.ExecuteSqlWithTransactionAsync(scriptToRun);
+                MessageBox.Show("Cleanup executed successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _lastEditedJunkScript = null; // Clear after use
+                BtnAnalyzeJunk_Click(btnCleanJunk, EventArgs.Empty); // Refresh
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Cleanup failed: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btnCleanJunk.Enabled = true;
+            }
+        }
+
+        private void TvJunkResults_NodeMouseDoubleClick(object? sender, TreeNodeMouseClickEventArgs e)
+        {
+            if (e.Node.Tag is JunkItem item)
+            {
+                using (var dlg = new JunkDetailDialog(item, GetJunkPostgresService()))
                 {
-                    switch (item.Type)
-                    {
-                        case JunkType.Schema: await service.DropSchemaAsync(item.DatabaseName, item.SchemaName, true); break;
-                        case JunkType.Table: await service.DropTableAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
-                        case JunkType.View: await service.DropViewAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
-                        case JunkType.Routine: await service.DropRoutineAsync(item.DatabaseName, item.SchemaName, item.ObjectName); break;
-                        case JunkType.DataRecord: await service.DeleteRecordAsync(item.ObjectName, item.PrimaryKeyColumn!, item.PrimaryKeyValue!, item.SchemaName); break;
+                    dlg.ShowDialog();
+                }
+            }
+        }
+
+        private void DgvJunkDataResults_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex >= 0 && dgvJunkDataResults.Rows[e.RowIndex].Tag is JunkItem item)
+            {
+                using (var dlg = new JunkDetailDialog(item, GetJunkPostgresService()))
+                {
+                    dlg.ShowDialog();
+                }
+            }
+        }
+
+        private void DgvJunkDataResults_CellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == 5 && e.Value != null)
+            {
+                var item = dgvJunkDataResults.Rows[e.RowIndex].Tag as JunkItem;
+                if (item?.MatchedKeywords == null || !item.MatchedKeywords.Any()) return;
+
+                string text = e.Value.ToString() ?? "";
+                var matches = new List<(int start, int length)>();
+                foreach (var kw in item.MatchedKeywords) {
+                    if (string.IsNullOrWhiteSpace(kw)) continue;
+                    int idx = 0;
+                    while ((idx = text.IndexOf(kw, idx, StringComparison.OrdinalIgnoreCase)) != -1) {
+                        matches.Add((idx, kw.Length));
+                        idx += kw.Length;
                     }
                 }
-                MessageBox.Show("Cleanup completed successfully.");
-                BtnAnalyzeJunk_Click(null, null); // Refresh
-            } catch (Exception ex) { MessageBox.Show("Cleaning error: " + ex.Message); }
-            finally { btnCleanJunk.Enabled = true; }
+
+                if (!matches.Any()) return;
+
+                e.PaintBackground(e.CellBounds, (e.State & DataGridViewElementStates.Selected) != 0);
+
+                var sortedMatches = matches.OrderBy(m => m.start).ToList();
+                int currentPos = 0;
+                
+                int currentX = e.CellBounds.X + e.CellStyle.Padding.Left + 4;
+                int y = e.CellBounds.Y + (e.CellBounds.Height - e.CellStyle.Font.Height) / 2;
+                
+                Color foreColor = (e.State & DataGridViewElementStates.Selected) != 0 ? e.CellStyle.SelectionForeColor : e.CellStyle.ForeColor;
+                
+                Region oldClip = e.Graphics.Clip;
+                e.Graphics.SetClip(e.CellBounds);
+                
+                try
+                {
+                    foreach (var match in sortedMatches) {
+                        if (match.start < currentPos) continue; 
+                        
+                        if (match.start > currentPos) {
+                            string pre = text.Substring(currentPos, match.start - currentPos);
+                            Size size = TextRenderer.MeasureText(e.Graphics, pre, e.CellStyle.Font);
+                            TextRenderer.DrawText(e.Graphics, pre, e.CellStyle.Font, new Point(currentX, y), foreColor, TextFormatFlags.NoPadding);
+                            currentX += size.Width;
+                        }
+                        
+                        string mid = text.Substring(match.start, match.length);
+                        Size midSize = TextRenderer.MeasureText(e.Graphics, mid, e.CellStyle.Font);
+                        e.Graphics.FillRectangle(Brushes.Yellow, currentX, e.CellBounds.Y + 2, midSize.Width, e.CellBounds.Height - 4);
+                        TextRenderer.DrawText(e.Graphics, mid, e.CellStyle.Font, new Point(currentX, y), Color.Red, TextFormatFlags.NoPadding);
+                        currentX += midSize.Width;
+                        currentPos = match.start + match.length;
+                        
+                        if (currentX > e.CellBounds.Right) break;
+                    }
+                    
+                    if (currentPos < text.Length && currentX < e.CellBounds.Right) {
+                        string post = text.Substring(currentPos);
+                        TextRenderer.DrawText(e.Graphics, post, e.CellStyle.Font, new Point(currentX, y), foreColor, TextFormatFlags.NoPadding);
+                    }
+                }
+                finally
+                {
+                    e.Graphics.Clip = oldClip;
+                }
+
+                e.Paint(e.CellBounds, DataGridViewPaintParts.Border | DataGridViewPaintParts.Focus);
+                e.Handled = true;
+            }
+        }
+
+        private PostgresService? GetJunkPostgresService()
+        {
+            if (cmbJunkConnection.SelectedIndex == 0) return _oldPgService;
+            if (cmbJunkConnection.SelectedIndex == 1) return _newPgService;
+            if (cmbJunkConnection.SelectedIndex == 2) return _customJunkPgService;
+            return null;
+        }
+
+        private void SetAllJunkSelectionCheckState(bool check)
+        {
+            tvJunkSelection.BeginUpdate();
+            foreach (TreeNode node in tvJunkSelection.Nodes)
+            {
+                node.Checked = check;
+                SetNodeCheckStateRecursive(node, check);
+            }
+            tvJunkSelection.EndUpdate();
+        }
+
+        private void SetNodeCheckStateRecursive(TreeNode parentNode, bool check)
+        {
+            foreach (TreeNode node in parentNode.Nodes)
+            {
+                node.Checked = check;
+                if (node.Nodes.Count > 0) SetNodeCheckStateRecursive(node, check);
+            }
+        }
+
+        private bool _isChangingCheck = false;
+        private void TvJunkResults_AfterCheck(object? sender, TreeViewEventArgs e)
+        {
+            if (_isChangingCheck || e.Node == null || e.Action == TreeViewAction.Unknown) return;
+
+            _isChangingCheck = true;
+            tvJunkResults.BeginUpdate();
+            try
+            {
+                // Recursive downward
+                SetNodeCheckStateRecursive(e.Node, e.Node.Checked);
+                
+                // Update upward
+                UpdateParentCheckState(e.Node);
+            }
+            finally
+            {
+                tvJunkResults.EndUpdate();
+                tvJunkResults.Invalidate(); // Force a clean repaint of the whole control
+                _isChangingCheck = false;
+            }
+        }
+
+        private void UpdateParentCheckState(TreeNode node)
+        {
+            TreeNode? parent = node.Parent;
+            if (parent == null) return;
+
+            bool allChecked = true;
+            bool anyChecked = false;
+
+            foreach (TreeNode child in parent.Nodes)
+            {
+                if (child.Checked) anyChecked = true;
+                else allChecked = false;
+            }
+
+            // We only set the parent if it's not already in the correct state
+            // to avoid unnecessary event triggers
+            if (parent.Checked != allChecked)
+            {
+                parent.Checked = allChecked;
+                UpdateParentCheckState(parent);
+            }
+        }
+
+        private void TvJunkResults_DrawNode(object? sender, DrawTreeNodeEventArgs e)
+        {
+            // Bảo vệ (Guard): Chặn mọi nỗ lực vẽ ảo của WinForms khi Element không nằm trong vùng khả kiến
+            if (e.Node == null || !e.Node.IsVisible || e.Bounds.IsEmpty || e.Bounds.Height <= 0 || e.Bounds.Width <= 0) return;
+
+            Font baseFont = e.Node.NodeFont ?? e.Node.TreeView.Font;
+            Color foreColor = e.Node.ForeColor;
+            if (foreColor == Color.Empty) foreColor = e.Node.TreeView.ForeColor;
+            
+            // Bounds calculation: e.Bounds is the text area in OwnerDrawText mode
+            // Add a 4px offset to prevent drawing over the OS-rendered checkbox right edge.
+            int xOffset = 4;
+            // Extend width by 60px because bolding text (Database, Schema nodes) makes it wider than the calculated e.Bounds
+            Rectangle clearRect = new Rectangle(e.Bounds.X + xOffset, e.Bounds.Y, e.Bounds.Width - xOffset + 60, e.Bounds.Height);
+            
+            // Text area can just be the same as clearRect, maybe 1px more for breathing room
+            Rectangle textRect = new Rectangle(clearRect.X + 2, clearRect.Y, clearRect.Width - 2, clearRect.Height);
+
+            // Clear background completely first to avoid artifacts, BUT do not start precisely at e.Bounds.X 
+            // because high-DPI Windows themes often let the checkbox draw slightly into the label bounds.
+            e.Graphics.FillRectangle(SystemBrushes.Window, clearRect);
+
+            // Highlight background if selected
+            if ((e.State & TreeNodeStates.Selected) != 0)
+            {
+                foreColor = SystemColors.HighlightText;
+                e.Graphics.FillRectangle(SystemBrushes.Highlight, clearRect);
+            }
+
+            // Custom logic for different node types
+            if (e.Node.Tag is JunkItem junkItem && junkItem.MatchedKeywords != null && junkItem.MatchedKeywords.Any())
+            {
+                string text = e.Node.Text;
+                int currentX = textRect.X;
+                int y = textRect.Y + (textRect.Height - baseFont.Height) / 2;
+
+                // Keyword highlighting logic
+                var matches = new List<(int start, int length)>();
+                foreach (var kw in junkItem.MatchedKeywords) {
+                    int idx = 0;
+                    while ((idx = text.IndexOf(kw, idx, StringComparison.OrdinalIgnoreCase)) != -1) {
+                        matches.Add((idx, kw.Length));
+                        idx += kw.Length;
+                    }
+                }
+                
+                var sortedMatches = matches.OrderBy(m => m.start).ToList();
+                int currentPos = 0;
+                
+                foreach (var match in sortedMatches) {
+                    if (match.start < currentPos) continue; 
+                    if (match.start > currentPos) {
+                        string pre = text.Substring(currentPos, match.start - currentPos);
+                        Size size = TextRenderer.MeasureText(e.Graphics, pre, baseFont);
+                        TextRenderer.DrawText(e.Graphics, pre, baseFont, new Point(currentX, y), foreColor, TextFormatFlags.NoPadding);
+                        currentX += size.Width;
+                    }
+                    
+                    string mid = text.Substring(match.start, match.length);
+                    Size midSize = TextRenderer.MeasureText(e.Graphics, mid, baseFont);
+                    e.Graphics.FillRectangle(Brushes.Yellow, currentX, textRect.Y, midSize.Width, textRect.Height);
+                    TextRenderer.DrawText(e.Graphics, mid, baseFont, new Point(currentX, y), Color.Red, TextFormatFlags.NoPadding);
+                    currentX += midSize.Width;
+                    currentPos = match.start + match.length;
+                }
+                
+                if (currentPos < text.Length) {
+                    string post = text.Substring(currentPos);
+                    TextRenderer.DrawText(e.Graphics, post, baseFont, new Point(currentX, y), foreColor, TextFormatFlags.NoPadding);
+                }
+            }
+            else
+            {
+                // Container nodes (Database, Schema, Routine types) - Make them BOLD
+                using (Font boldFont = new Font(baseFont, FontStyle.Bold))
+                {
+                    int y = textRect.Y + (textRect.Height - boldFont.Height) / 2;
+                    TextRenderer.DrawText(e.Graphics, e.Node.Text, boldFont, new Point(textRect.X, y), foreColor, TextFormatFlags.NoPadding);
+                }
+            }
+            
+            if ((e.State & TreeNodeStates.Focused) != 0)
+                ControlPaint.DrawFocusRectangle(e.Graphics, textRect, foreColor, SystemColors.Highlight);
         }
 
         private List<JunkItem> GetSelectedJunkItems()
