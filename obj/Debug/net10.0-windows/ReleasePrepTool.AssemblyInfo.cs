@@ -10,10 +10,11 @@
 using System;
 using System.Reflection;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("ReleasePrepTool.Tests")]
 [assembly: System.Reflection.AssemblyCompanyAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+abe6847ba8bf5969642cbfbe7a52270b85e317c9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2352976b156758464102f1edf4601451c5151513")]
 [assembly: System.Reflection.AssemblyProductAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

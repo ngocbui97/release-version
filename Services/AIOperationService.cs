@@ -83,8 +83,12 @@ Provide a concise, bulleted review.";
         if (response.IsSuccessStatusCode)
         {
             var responseString = await response.Content.ReadAsStringAsync();
-            dynamic aiResponse = JsonConvert.DeserializeObject(responseString);
-            return aiResponse.choices[0].message.content.ToString();
+            var aiResponse = JsonConvert.DeserializeObject<dynamic>(responseString);
+            if (aiResponse?.choices != null && aiResponse.choices.Count > 0)
+            {
+                return aiResponse.choices[0].message.content.ToString();
+            }
+            return "AI API returned an unexpected response structure.";
         }
 
         var error = await response.Content.ReadAsStringAsync();

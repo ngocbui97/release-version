@@ -40,7 +40,7 @@ public class DatabaseCompareService
         _targetConfig = targetConfig;
     }
 
-    public async Task<List<string>> GetSchemasAsync(DatabaseConfig config)
+    public virtual async Task<List<string>> GetSchemasAsync(DatabaseConfig config)
     {
         var schemas = new List<string>();
         await using var conn = new NpgsqlConnection(config.GetConnectionString());
@@ -52,7 +52,7 @@ public class DatabaseCompareService
         return schemas;
     }
 
-    public async Task<List<SchemaDiffResult>> GenerateSchemaDiffResultsAsync(string sourceSchema, string targetSchema)
+    public virtual async Task<List<SchemaDiffResult>> GenerateSchemaDiffResultsAsync(string sourceSchema, string targetSchema)
     {
         var categoryResults = new Dictionary<string, List<SchemaDiffResult>> {
             { "Extension", new() }, { "Role", new() }, { "Enum", new() }, { "Sequence", new() },
@@ -116,13 +116,8 @@ public class DatabaseCompareService
         foreach (var table in sortedAddedTables)
         {
             var cols = sourceCols.Where(c => c.TableName == table).ToList();
-            var ddl = new StringBuilder();
-            ddl.AppendLine($"CREATE TABLE {targetSchema}.\"{table}\" (");
-            var colDefs = cols.Select(c => $"    {c.ColumnName} {c.DataType}{(c.CharacterMaximumLength != null ? $"({c.CharacterMaximumLength})" : "")}{(c.IsNullable == "NO" ? " NOT NULL" : "")}{(string.IsNullOrEmpty(c.ColumnDefault) ? "" : $" DEFAULT {c.ColumnDefault}")}");
-            ddl.AppendLine(string.Join(",\n", colDefs));
-            ddl.AppendLine(");");
-
-            categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Added", SourceDDL = ddl.ToString(), TargetDDL = "-- N/A", DiffScript = ddl.ToString() });
+            var ddl = await BuildFullTableDdlAsync(_sourceConfig, sourceSchema, table, cols);
+            categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Added", SourceDDL = ddl, TargetDDL = "-- Object does not exist in Target database", DiffScript = ddl });
         }
 
         var commonTables = targetTables.Intersect(sourceTables).ToList();
@@ -132,36 +127,92 @@ public class DatabaseCompareService
             var sourceTableCols = sourceCols.Where(c => c.TableName == table).ToList();
             var diff = new StringBuilder();
             
-            // Simplified column additions/removals
+            // 1. New columns
             foreach (var col in sourceTableCols.Where(sc => !targetTableCols.Any(tc => tc.ColumnName == sc.ColumnName)))
-                diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {col.DataType}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
+                diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {MapPostgresType(col.DataType)}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
             
+            // 2. Removed columns
             foreach (var colName in targetTableCols.Select(tc => tc.ColumnName).Except(sourceTableCols.Select(sc => sc.ColumnName)))
                 diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" DROP COLUMN \"{colName}\";");
+
+            // 3. Changed columns (Deep Comparison)
+            var commonCols = sourceTableCols.Where(sc => targetTableCols.Any(tc => tc.ColumnName == sc.ColumnName));
+            foreach (var sCol in commonCols)
+            {
+                var tCol = targetTableCols.First(tc => tc.ColumnName == sCol.ColumnName);
+                bool typeChanged = sCol.DataType != tCol.DataType || sCol.CharacterMaximumLength != tCol.CharacterMaximumLength;
+                bool nullChanged = sCol.IsNullable != tCol.IsNullable;
+                bool defaultChanged = (sCol.ColumnDefault ?? "") != (tCol.ColumnDefault ?? "");
+
+                if (typeChanged)
+                {
+                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" TYPE {MapPostgresType(sCol.DataType)}{(sCol.CharacterMaximumLength != null ? $"({sCol.CharacterMaximumLength})" : "")};");
+                }
+                
+                if (nullChanged)
+                {
+                    if (sCol.IsNullable == "NO")
+                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" SET NOT NULL;");
+                    else
+                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" DROP NOT NULL;");
+                }
+
+                if (defaultChanged)
+                {
+                    if (string.IsNullOrEmpty(sCol.ColumnDefault))
+                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" DROP DEFAULT;");
+                    else
+                        diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" SET DEFAULT {sCol.ColumnDefault};");
+                }
+            }
             
             if (diff.Length > 0)
-                categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Altered", DiffScript = diff.ToString() });
+            {
+                var sDdl = await BuildFullTableDdlAsync(_sourceConfig, sourceSchema, table, sourceTableCols);
+                var tDdl = await BuildFullTableDdlAsync(_targetConfig, targetSchema, table, targetTableCols);
+
+                categoryResults["Table"].Add(new SchemaDiffResult { 
+                    ObjectType = "Table", ObjectName = table, DiffType = "Altered", 
+                    SourceDDL = sDdl, TargetDDL = tDdl, DiffScript = diff.ToString() 
+                });
+            }
         }
 
         // --- Category: View ---
         var addedViews = sourceViews.Keys.Except(targetViews.Keys);
-        foreach (var v in addedViews) categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", DiffScript = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".") });
+        foreach (var v in addedViews) {
+            string sourceDef = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".");
+            categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+        }
         var commonViews = targetViews.Keys.Intersect(sourceViews.Keys);
         foreach (var v in commonViews) {
             string sourceDef = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetViews[v] != sourceDef) categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Altered", DiffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef.Substring(sourceDef.IndexOf(" AS ", StringComparison.OrdinalIgnoreCase) + 4)}" });
+            if (targetViews[v] != sourceDef) 
+                categoryResults["View"].Add(new SchemaDiffResult { 
+                    ObjectType = "View", ObjectName = v, DiffType = "Altered", 
+                    SourceDDL = sourceDef, TargetDDL = targetViews[v],
+                    DiffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef}" 
+                });
         }
 
         // --- Category: Routine ---
         var addedRoutines = sourceRoutines.Keys.Except(targetRoutines.Keys);
-        foreach (var r in addedRoutines) categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", DiffScript = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".") });
+        foreach (var r in addedRoutines) {
+            string sourceDef = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".");
+            categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+        }
         var commonRoutines = targetRoutines.Keys.Intersect(sourceRoutines.Keys);
-        foreach (var r in commonRoutines) 
-            if (targetRoutines[r] != sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + "."))
-                categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", DiffScript = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".") });
+        foreach (var r in commonRoutines) {
+            string sourceDef = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".");
+            if (targetRoutines[r] != sourceDef)
+                categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", SourceDDL = sourceDef, TargetDDL = targetRoutines[r], DiffScript = sourceDef });
+        }
 
         // --- Category: Materialized View ---
-        foreach (var name in sourceMatViews.Keys.Except(targetMatViews.Keys)) categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", DiffScript = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".") });
+        foreach (var name in sourceMatViews.Keys.Except(targetMatViews.Keys)) {
+            string sourceDef = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".");
+            categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+        }
 
         // --- Categories: Index, Constraint, Trigger ---
         await CompareGenericObjectsAsync(categoryResults["Index"], "Index", targetIndexes, sourceIndexes, targetSchema);
@@ -176,11 +227,60 @@ public class DatabaseCompareService
         return finalResults;
     }
 
+    internal string MapPostgresType(string type)
+    {
+        return type.ToLower() switch
+        {
+            "integer" => "int4",
+            "bigint" => "int8",
+            "boolean" => "bool",
+            "character varying" => "varchar",
+            "timestamp without time zone" => "timestamp",
+            _ => type
+        };
+    }
+
+    private async Task<string> BuildFullTableDdlAsync(DatabaseConfig config, string schema, string table, List<ColumnInfo> cols)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"CREATE TABLE {schema}.\"{table}\" (");
+        
+        var lines = new List<string>();
+        foreach (var c in cols)
+        {
+            // Simplified names without quotes as per user sample
+            var def = $"    {c.ColumnName} {MapPostgresType(c.DataType)}";
+            if (c.CharacterMaximumLength != null) def += $"({c.CharacterMaximumLength})";
+            if (!string.IsNullOrEmpty(c.ColumnDefault)) def += $" DEFAULT {c.ColumnDefault}";
+            def += (c.IsNullable == "NO" ? " NOT NULL" : " NULL");
+            lines.Add(def);
+        }
+
+        // Add Primary Key
+        var pks = await GetPrimaryKeysAsync(config, table, schema);
+        if (pks.Any())
+        {
+            // Simplified PK name: strip common prefixes like U01_
+            string workingName = table.ToLower();
+            if (workingName.Length > 4 && workingName.StartsWith("u") && char.IsDigit(workingName[1]) && char.IsDigit(workingName[2]) && workingName[3] == '_')
+            {
+                workingName = workingName.Substring(4);
+            }
+            
+            string pkName = $"pk_{workingName}";
+            lines.Add($"    CONSTRAINT {pkName} PRIMARY KEY ({string.Join(", ", pks)})");
+        }
+
+        sb.AppendLine(string.Join(",\n", lines));
+        sb.AppendLine(");");
+        return sb.ToString();
+    }
+
     private async Task CompareGenericObjectsAsync(List<SchemaDiffResult> results, string type, Dictionary<string, string> oldObjs, Dictionary<string, string> newObjs, string targetSchema)
     {
         var added = newObjs.Keys.Except(oldObjs.Keys);
         foreach (var name in added) {
-            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Added", SourceDDL = "-- N/A", TargetDDL = newObjs[name], DiffScript = newObjs[name] });
+            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Added", SourceDDL = newObjs[name], TargetDDL = "-- Object does not exist in Target database", DiffScript = newObjs[name] });
         }
         var removed = oldObjs.Keys.Except(newObjs.Keys);
         foreach (var name in removed) {
@@ -194,7 +294,7 @@ public class DatabaseCompareService
         }
     }
 
-    public async Task<string> GenerateSchemaDiffAsync(string sourceSchema, string targetSchema)
+    public virtual async Task<string> GenerateSchemaDiffAsync(string sourceSchema, string targetSchema)
     {
         var results = await GenerateSchemaDiffResultsAsync(sourceSchema, targetSchema);
         var sb = new StringBuilder();
@@ -207,7 +307,7 @@ public class DatabaseCompareService
         return sb.ToString();
     }
 
-    public async Task<string> GenerateDataDiffAsync(List<string> tablesToCompare, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
+    public virtual async Task<string> GenerateDataDiffAsync(List<string> tablesToCompare, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
     {
         options ??= new DataCompareOptions();
         var sb = new StringBuilder();
@@ -314,7 +414,7 @@ public class DatabaseCompareService
         return sb.ToString();
     }
 
-    public async Task<DataDiffSummary> GetTableDataDiffSummaryAsync(string table, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
+    public virtual async Task<DataDiffSummary> GetTableDataDiffSummaryAsync(string table, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
     {
         options ??= new DataCompareOptions();
         var summary = new DataDiffSummary { TableName = table };
@@ -340,7 +440,7 @@ public class DatabaseCompareService
         return summary;
     }
 
-    public async Task<List<DataRowDiff>> GetDetailedTableDataDiffAsync(string table, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
+    public virtual async Task<List<DataRowDiff>> GetDetailedTableDataDiffAsync(string table, string sourceSchema, string targetSchema, DataCompareOptions? options = null)
     {
         options ??= new DataCompareOptions();
         var diffs = new List<DataRowDiff>();
@@ -795,7 +895,7 @@ public class DatabaseCompareService
         return deps;
     }
 
-    private List<string> SortTablesTopologically(IEnumerable<string> tables, List<(string Table, string DependsOn)> dependencies)
+    internal List<string> SortTablesTopologically(IEnumerable<string> tables, List<(string Table, string DependsOn)> dependencies)
     {
         var sorted = new List<string>();
         var visited = new HashSet<string>();

@@ -33,30 +33,18 @@ namespace ReleasePrepTool.UI
             this.StartPosition = FormStartPosition.CenterScreen;
             this.MinimizeBox = true;
             this.MaximizeBox = true;
+            this.WindowState = FormWindowState.Maximized;
 
-            // Header with summary + a Close button
-            var pnlHeader = new Panel { Dock = DockStyle.Top, Height = 70, Padding = new Padding(14, 10, 14, 10), BackColor = Color.FromArgb(245, 247, 252) };
+            // Header with summary
+            var pnlHeader = new Panel { Dock = DockStyle.Top, Height = 45, Padding = new Padding(14, 0, 14, 0), BackColor = Color.White };
             lblSummary = new Label {
                 Text = $"Table: {_tableName}  |  Loading…",
                 Dock = DockStyle.Fill,
-                Font = new Font("Segoe UI", 10.5f, FontStyle.Regular),
-                ForeColor = Color.FromArgb(50, 50, 80),
+                Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
+                ForeColor = UIConstants.Primary,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-            var btnClose = new Button {
-                Text = "✕ Close",
-                Dock = DockStyle.Right,
-                Width = 90,
-                Height = 30,
-                Margin = new Padding(0, 10, 0, 10),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(220, 60, 60),
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
-            };
-            btnClose.Click += (s, e) => this.Close();
             pnlHeader.Controls.Add(lblSummary);
-            pnlHeader.Controls.Add(btnClose);
 
             // Separator
             var sep = new Panel { Dock = DockStyle.Top, Height = 2, BackColor = Color.FromArgb(210, 215, 230) };
@@ -154,6 +142,8 @@ namespace ReleasePrepTool.UI
                 var srcIdx = grid.Rows.Add();
                 var srcRow = grid.Rows[srcIdx];
                 srcRow.DefaultCellStyle.BackColor = colorNewRow;
+                srcRow.DefaultCellStyle.SelectionBackColor = colorNewRow;
+                srcRow.DefaultCellStyle.SelectionForeColor = Color.Black;
                 srcRow.Cells["_RowType"].Value = "🔵 New";
                 srcRow.Cells["_ChangedCols"].Value = changedColsLabel;
                 foreach (var col in sortedCols)
@@ -163,9 +153,13 @@ namespace ReleasePrepTool.UI
                     srcRow.Cells[col].Value = val == null || val is DBNull ? "NULL" : val.ToString();
                     if (d.ChangedColumns.Contains(col))
                     {
-                        srcRow.Cells[col].Style.BackColor = Color.FromArgb(180, 225, 255);
+                        var highlight = Color.FromArgb(180, 225, 255);
+                        var fgHighlight = Color.FromArgb(0, 50, 130);
+                        srcRow.Cells[col].Style.BackColor = highlight;
+                        srcRow.Cells[col].Style.SelectionBackColor = highlight;
                         srcRow.Cells[col].Style.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-                        srcRow.Cells[col].Style.ForeColor = Color.FromArgb(0, 50, 130);
+                        srcRow.Cells[col].Style.ForeColor = fgHighlight;
+                        srcRow.Cells[col].Style.SelectionForeColor = fgHighlight;
                     }
                 }
 
@@ -173,6 +167,8 @@ namespace ReleasePrepTool.UI
                 var tgtIdx = grid.Rows.Add();
                 var tgtRow = grid.Rows[tgtIdx];
                 tgtRow.DefaultCellStyle.BackColor = colorOldRow;
+                tgtRow.DefaultCellStyle.SelectionBackColor = colorOldRow;
+                tgtRow.DefaultCellStyle.SelectionForeColor = Color.Black;
                 tgtRow.Cells["_RowType"].Value = "🟡 Old";
                 tgtRow.Cells["_ChangedCols"].Value = ""; // blank for old row
                 foreach (var col in sortedCols)
@@ -182,9 +178,13 @@ namespace ReleasePrepTool.UI
                     tgtRow.Cells[col].Value = val == null || val is DBNull ? "NULL" : val.ToString();
                     if (d.ChangedColumns.Contains(col))
                     {
-                        tgtRow.Cells[col].Style.BackColor = Color.FromArgb(255, 215, 160);
+                        var highlight = Color.FromArgb(255, 215, 160);
+                        var fgHighlight = Color.FromArgb(130, 50, 0);
+                        tgtRow.Cells[col].Style.BackColor = highlight;
+                        tgtRow.Cells[col].Style.SelectionBackColor = highlight;
                         tgtRow.Cells[col].Style.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
-                        tgtRow.Cells[col].Style.ForeColor = Color.FromArgb(130, 50, 0);
+                        tgtRow.Cells[col].Style.ForeColor = fgHighlight;
+                        tgtRow.Cells[col].Style.SelectionForeColor = fgHighlight;
                     }
                 }
 
@@ -198,6 +198,7 @@ namespace ReleasePrepTool.UI
             AddLimitNotice(tabPage, filteredDiffs.Count, 1000);
             tabPage.Controls.Add(grid);
             tabControl.TabPages.Add(tabPage);
+            grid.ClearSelection();
         }
 
         private void AddSimpleTab(string title, string diffType, Color rowBgColor)
@@ -225,6 +226,8 @@ namespace ReleasePrepTool.UI
                 var rowIdx = grid.Rows.Add();
                 var row = grid.Rows[rowIdx];
                 row.DefaultCellStyle.BackColor = rowBgColor;
+                row.DefaultCellStyle.SelectionBackColor = rowBgColor;
+                row.DefaultCellStyle.SelectionForeColor = Color.Black;
                 foreach (var col in sortedCols)
                 {
                     if (!grid.Columns.Contains(col)) continue;
@@ -236,6 +239,7 @@ namespace ReleasePrepTool.UI
             AddLimitNotice(tabPage, filteredDiffs.Count, 2000);
             tabPage.Controls.Add(grid);
             tabControl.TabPages.Add(tabPage);
+            grid.ClearSelection();
         }
 
         private DataGridView BuildGrid()
@@ -256,7 +260,7 @@ namespace ReleasePrepTool.UI
                     Padding = new Padding(4)
                 },
                 EnableHeadersVisualStyles = false,
-                RowTemplate = { Height = 24 }
+                RowTemplate = { Height = 28 }
             };
         }
 
