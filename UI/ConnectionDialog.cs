@@ -130,6 +130,7 @@ namespace ReleasePrepTool.UI
             this.Controls.Add(pnlHeader);   // Top
             this.Controls.Add(pnlFooter);   // Bottom
             this.Controls.Add(pnlBody);     // Fill added LAST to take remaining space
+            pnlBody.BringToFront();
 
             this.AcceptButton = btnOk;
             this.CancelButton = btnCancel;

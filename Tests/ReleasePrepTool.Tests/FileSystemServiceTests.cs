@@ -66,8 +66,8 @@ namespace ReleasePrepTool.Tests
             service.EnsureDirectoryStructure();
             
             Assert.That(Directory.Exists(service.BaseReleasePath), Is.True);
-            Assert.That(Directory.Exists(Path.Combine(service.BaseReleasePath, "database", "backup")), Is.True);
-            Assert.That(Directory.Exists(Path.Combine(service.BaseReleasePath, "database", "script_update", "schema")), Is.True);
+            Assert.That(Directory.Exists(Path.Combine(service.BaseReleasePath, "db", "backup")), Is.True);
+            Assert.That(Directory.Exists(Path.Combine(service.BaseReleasePath, "db", "script_update", "schema")), Is.True);
         }
     }
 }

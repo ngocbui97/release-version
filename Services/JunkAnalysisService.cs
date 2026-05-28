@@ -289,11 +289,48 @@ public class JunkAnalysisService
                     case JunkType.Sequence: sb.AppendLine($"DROP SEQUENCE IF EXISTS \"{item.SchemaName}\".\"{item.ObjectName}\" CASCADE;"); break;
                     case JunkType.Aggregate: sb.AppendLine($"DROP AGGREGATE IF EXISTS \"{item.SchemaName}\".\"{item.ObjectName}\" CASCADE;"); break;
                     case JunkType.Domain: sb.AppendLine($"DROP DOMAIN IF EXISTS \"{item.SchemaName}\".\"{item.ObjectName}\" CASCADE;"); break;
-                    case JunkType.DataRecord: sb.AppendLine($"DELETE FROM \"{item.SchemaName}\".\"{item.ObjectName}\" WHERE \"{item.PrimaryKeyColumn}\" = '{item.PrimaryKeyValue}';"); break;
+                    case JunkType.DataRecord:
+                        AppendDataRecordDeleteScript(sb, item);
+                        break;
                 }
             }
         }
         return sb.ToString();
+    }
+
+    private void AppendDataRecordDeleteScript(System.Text.StringBuilder sb, JunkItem item)
+    {
+        if (item.DependentObjects.Any())
+        {
+            sb.AppendLine($"-- ⚠ CASCADE IMPACT: The following child records will also be deleted for {item.SchemaName}.{item.ObjectName} ({item.PrimaryKeyColumn} = '{item.PrimaryKeyValue}')");
+            AppendCascadeDeleteScript(sb, item, 0);
+        }
+        sb.AppendLine($"DELETE FROM \"{item.SchemaName}\".\"{item.ObjectName}\" WHERE \"{item.PrimaryKeyColumn}\" = '{item.PrimaryKeyValue}';");
+    }
+
+    private void AppendCascadeDeleteScript(System.Text.StringBuilder sb, JunkItem item, int level)
+    {
+        string indent = new string(' ', level * 2);
+        foreach (var dep in item.DependentObjects)
+        {
+            if (dep.DetectedContent != null && dep.DetectedContent.StartsWith("[ROW DETAIL]"))
+                continue;
+
+            sb.AppendLine($"{indent}-- ⚠ {dep.DetectedContent}");
+            
+            var fkColMatch = System.Text.RegularExpressions.Regex.Match(dep.DetectedContent ?? "", @"via\s+([a-zA-Z0-9_]+)");
+            if (fkColMatch.Success && !string.IsNullOrEmpty(item.PrimaryKeyValue))
+            {
+                string fkCol = fkColMatch.Groups[1].Value;
+                sb.AppendLine($"{indent}DELETE FROM \"{dep.SchemaName}\".\"{dep.ObjectName}\" WHERE \"{fkCol}\" = '{item.PrimaryKeyValue}';");
+            }
+            else
+            {
+                 sb.AppendLine($"{indent}-- (Cannot determine FK column for auto-delete, please delete manually or let DB ON DELETE CASCADE handle it)");
+            }
+
+            AppendCascadeDeleteScript(sb, dep, level + 1);
+        }
     }
 
     private async Task ProcessJunk(JunkAnalysisResult dbResult, string dbName, string schema, string objName, string? tempParentName, JunkType type, uint oid, string? def, string? comment, List<string> keywords, List<string>? columnNames = null)

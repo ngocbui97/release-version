@@ -163,4 +163,147 @@ public class ConfigCompareService
 
         return sb.ToString();
     }
+
+    public string CompareDirectories(string oldDir, string newDir, out bool hasChanges, out List<(string FileName, string CleanContent)> cleanFiles)
+    {
+        hasChanges = false;
+        cleanFiles = new List<(string, string)>();
+        if (!Directory.Exists(oldDir) || !Directory.Exists(newDir))
+        {
+            return "One of the directories is missing.";
+        }
+
+        var oldFiles = Directory.GetFiles(oldDir, "*.*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".json") || f.EndsWith(".env"))
+            .Select(f => Path.GetRelativePath(oldDir, f))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var newFiles = Directory.GetFiles(newDir, "*.*", SearchOption.AllDirectories)
+            .Where(f => f.EndsWith(".json") || f.EndsWith(".env"))
+            .Select(f => Path.GetRelativePath(newDir, f))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var addedFiles = newFiles.Except(oldFiles, StringComparer.OrdinalIgnoreCase).OrderBy(f => f).ToList();
+        var removedFiles = oldFiles.Except(newFiles, StringComparer.OrdinalIgnoreCase).OrderBy(f => f).ToList();
+        var commonFiles = oldFiles.Intersect(newFiles, StringComparer.OrdinalIgnoreCase).OrderBy(f => f).ToList();
+
+        var sb = new StringBuilder();
+
+        if (addedFiles.Any())
+        {
+            sb.AppendLine("=== Added Files in Target ===");
+            foreach (var file in addedFiles)
+            {
+                hasChanges = true;
+                sb.AppendLine($"   + {file}");
+                string fullNewPath = Path.Combine(newDir, file);
+                try
+                {
+                    string cleanContent = "";
+                    if (file.EndsWith(".json"))
+                    {
+                        var json = JObject.Parse(File.ReadAllText(fullNewPath));
+                        CleanupJsonNode(json);
+                        cleanContent = json.ToString();
+                    }
+                    else
+                    {
+                        var cleanSb = new StringBuilder();
+                        foreach (var line in File.ReadLines(fullNewPath))
+                        {
+                            var trimmed = line.Trim();
+                            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#"))
+                            {
+                                cleanSb.AppendLine(line);
+                                continue;
+                            }
+                            var idx = trimmed.IndexOf('=');
+                            if (idx > 0)
+                            {
+                                var key = trimmed.Substring(0, idx).Trim();
+                                var lowerKey = key.ToLower();
+                                if (lowerKey.Contains("password") || lowerKey.Contains("secret") || lowerKey.Contains("token") || lowerKey.Contains("key"))
+                                {
+                                    cleanSb.AppendLine($"{key}=");
+                                }
+                                else
+                                {
+                                    cleanSb.AppendLine(trimmed);
+                                }
+                            }
+                            else
+                            {
+                                cleanSb.AppendLine(trimmed);
+                            }
+                        }
+                        cleanContent = cleanSb.ToString();
+                    }
+                    cleanFiles.Add((file, cleanContent));
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  [Error processing added file {file}: {ex.Message}]");
+                }
+            }
+            sb.AppendLine();
+        }
+
+        if (removedFiles.Any())
+        {
+            sb.AppendLine("=== Removed Files in Target ===");
+            foreach (var file in removedFiles)
+            {
+                hasChanges = true;
+                sb.AppendLine($"   - {file}");
+            }
+            sb.AppendLine();
+        }
+
+        if (commonFiles.Any())
+        {
+            foreach (var file in commonFiles)
+            {
+                string oldFilePath = Path.Combine(oldDir, file);
+                string newFilePath = Path.Combine(newDir, file);
+                bool fileHasChanges = false;
+                string fileCleanContent = "";
+                string diff = "";
+
+                try
+                {
+                    if (file.EndsWith(".json"))
+                    {
+                        diff = CompareJsonFiles(oldFilePath, newFilePath, out fileHasChanges, out fileCleanContent);
+                    }
+                    else if (file.EndsWith(".env"))
+                    {
+                        diff = CompareEnvFiles(oldFilePath, newFilePath, out fileHasChanges, out fileCleanContent);
+                    }
+
+                    if (fileHasChanges)
+                    {
+                        hasChanges = true;
+                        sb.AppendLine($"--- {file} ---");
+                        var lines = diff.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+                        foreach (var line in lines)
+                        {
+                            if (!string.IsNullOrWhiteSpace(line))
+                            {
+                                sb.AppendLine("   " + line);
+                            }
+                        }
+                        sb.AppendLine();
+                        cleanFiles.Add((file, fileCleanContent));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"--- {file} ---");
+                    sb.AppendLine($"[Error comparing file: {ex.Message}]");
+                }
+            }
+        }
+
+        return sb.ToString();
+    }
 }

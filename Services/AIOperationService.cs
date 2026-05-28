@@ -10,12 +10,12 @@ public class AIOperationService
     private readonly string _apiKey;
     private readonly string _model;
 
-    // We assume OpenAI API compatibility for simplicity, can be adjusted for Gemini
-    public AIOperationService(string apiKey, string model = "gpt-4o")
+    // Configured to use Gemini API via its OpenAI-compatible endpoint
+    public AIOperationService(string apiKey, string model = "gemini-2.0-flash")
     {
         _apiKey = apiKey;
         _model = model;
-        _httpClient = new HttpClient { BaseAddress = new Uri("https://api.openai.com/v1/") };
+        _httpClient = new HttpClient { BaseAddress = new Uri("https://generativelanguage.googleapis.com/v1beta/openai/") };
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
     }
 
@@ -65,6 +65,30 @@ Provide a concise, bulleted review.";
         return await CreateChatCompletionAsync(prompt);
     }
 
+    public async Task<string> ReviewDataChangesAsync(string sqlScript, string context)
+    {
+        if (string.IsNullOrWhiteSpace(_apiKey)) return "AI API Key is not configured.";
+
+        var prompt = $@"
+You are a senior database administrator reviewing a PostgreSQL data synchronization script.
+Context: {context}
+
+Review the following data sync SQL script for:
+1. Potential bulk deletion or updates that might be accidental.
+2. Inconsistent values or formatting.
+3. Violations of data integrity or suspicious values.
+4. Security/Privacy issues (e.g. inserting unhashed passwords).
+
+Script:
+```sql
+{sqlScript}
+```
+
+Provide a concise, bulleted review focusing only on potential issues or risks. If the script looks safe, say 'The script appears strictly safe.'.";
+
+        return await CreateChatCompletionAsync(prompt);
+    }
+
     private async Task<string> CreateChatCompletionAsync(string prompt)
     {
         var requestBody = new
@@ -83,10 +107,11 @@ Provide a concise, bulleted review.";
         if (response.IsSuccessStatusCode)
         {
             var responseString = await response.Content.ReadAsStringAsync();
-            var aiResponse = JsonConvert.DeserializeObject<dynamic>(responseString);
-            if (aiResponse?.choices != null && aiResponse.choices.Count > 0)
+            var aiResponse = JsonConvert.DeserializeObject<Newtonsoft.Json.Linq.JObject>(responseString);
+            var contentToken = aiResponse?["choices"]?[0]?["message"]?["content"];
+            if (contentToken != null)
             {
-                return aiResponse.choices[0].message.content.ToString();
+                return contentToken.ToString();
             }
             return "AI API returned an unexpected response structure.";
         }

@@ -663,7 +663,7 @@ public class PostgresService
 
     public virtual async Task DumpFullScriptAsync(string outputPath)
     {
-        await RunPostgresToolAsync("pg_dump", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -F p -f \"{outputPath}\" {_config.DatabaseName}");
+        await RunPostgresToolAsync("pg_dump", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -F p --column-inserts -f \"{outputPath}\" {_config.DatabaseName}");
     }
 
     public virtual async Task CreateDatabaseIfNotExistsAsync(string dbName)

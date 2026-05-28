@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2352976b156758464102f1edf4601451c5151513")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8d4e95a0a5f3167f677bccffbcedd28d0e29ee1f")]
 [assembly: System.Reflection.AssemblyProductAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ReleasePrepTool")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

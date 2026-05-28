@@ -45,11 +45,12 @@ namespace ReleasePrepTool.UI
         // Tab 4: Sync & Execute DB
         private Button btnExecuteSchema = null!, btnExecuteData = null!;
         private TextBox txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!;
-        private FlowLayoutPanel pnlStatusLabels = null!, pnlTreeToolbar = null!;
+        private FlowLayoutPanel pnlStatusLabels = null!, pnlDataStatusLabels = null!, pnlTreeToolbar = null!;
         private RichTextBox txtSourceDdl = null!, txtTargetDdl = null!, txtSourceLineNumbers = null!, txtTargetLineNumbers = null!;
         private TextBox txtIgnoreColumns = null!, txtDataFilter = null!;
         private CheckBox chkUseUpsert = null!;
-        private Label lblDataStatus = null!;
+        private Label lblDataStatus = null!, lblAiReviewStatus = null!;
+        private Label lblAiKeyReadiness = null!, lblAiSchemaReadiness = null!, lblAiDataReadiness = null!, lblAiConfigReadiness = null!;
         private List<SchemaDiffResult> _schemaDiffs = new List<SchemaDiffResult>();
         private Label lblSourceDdlHeader = null!, lblTargetDdlHeader = null!;
         private ProgressBar pbDataLoading = null!;
@@ -58,9 +59,10 @@ namespace ReleasePrepTool.UI
         // Tab 6: Compare Config
         private TextBox txtOldConfigPath = null!, txtNewConfigPath = null!;
         private Button btnSelectOldConfig = null!, btnSelectNewConfig = null!, btnCompareConfig = null!;    
+        private RadioButton rbCompareFile = null!, rbCompareFolder = null!;
 
         // Tab 7: Final Export + Tab 8: AI Review
-        private Button btnReviewSchema = null!, btnReviewConfig = null!, btnGenerateSchema = null!;
+        private Button btnReviewSchema = null!, btnReviewConfig = null!, btnReviewData = null!, btnGenerateSchema = null!;
         private Button btnOpenSchemaFolder = null!, btnOpenDataFolder = null!, btnEditSchema = null!, btnEditData = null!;
         private ComboBox cmbJunkConnection = null!;
         private TreeView tvJunkSelection = null!;
@@ -75,8 +77,10 @@ namespace ReleasePrepTool.UI
         private Button btnAnalyzeJunk = null!, btnCleanJunk = null!, btnGenerateJunkScript = null!;
         private JunkAnalysisService? _junkService;
         private List<JunkAnalysisResult> _lastJunkResults = new();
-        private DatabaseConfig? _customJunkConfig, _customRestoreConfig;
-        private PostgresService? _customJunkPgService, _customRestorePgService;
+        private DatabaseConfig? _customJunkConfig, _customRestoreConfig, _customFinalExportConfig;
+        private PostgresService? _customJunkPgService, _customRestorePgService, _customFinalExportPgService;
+        private ComboBox cmbFinalExportConnection = null!;
+        private CheckedListBox clbFinalExportDbs = null!;
         private string? _lastSchemaExportPath, _lastDataExportPath;
 
         // Services
@@ -86,7 +90,13 @@ namespace ReleasePrepTool.UI
         private FileSystemService? _fileSystemService;
         private AIOperationService? _aiService;
         private bool _suppressComboEvents = false; 
+        private bool _suppressConfigEvents = false; 
         private bool _isInitializingJunk = false; // Guard for startup Junk Tab population
+        private bool _isAiReviewRunning = false;
+        private string _configCompareSourceFile = "";
+        private string _configCompareTargetFile = "";
+        private string _configCompareSourceFolder = "";
+        private string _configCompareTargetFolder = "";
 
         public MainForm()
         {
@@ -213,7 +223,7 @@ namespace ReleasePrepTool.UI
                     g.FillRectangle(b, 0, 0, pnl.Width - 2, 3);
             };
             if (!string.IsNullOrEmpty(title)) {
-                var lblTitle = new Label { Text = title, Dock = DockStyle.Top, Height = 32, Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.Primary, Padding = new Padding(0, 8, 0, 0) };
+                var lblTitle = new Label { Text = title, Dock = DockStyle.Top, Height = 26, Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.Primary, Padding = new Padding(0, 4, 0, 0) };
                 pnl.Controls.Add(lblTitle);
             }
             return pnl;
@@ -222,7 +232,7 @@ namespace ReleasePrepTool.UI
         private void UpdateStatusBadge(Label lbl, bool? isValid, string info)
         {
             lbl.AutoSize = true;
-            lbl.Padding = new Padding(10, 5, 10, 5);
+            lbl.Padding = new Padding(10, 8, 10, 8);
             lbl.Font = new Font(UIConstants.MainFontName, 9f);
             if (isValid == true) {
                 lbl.Text = $"✔  Connected: {info}";
@@ -291,38 +301,90 @@ namespace ReleasePrepTool.UI
             panelConfig.Controls.Add(lblIntro);
 
             // --- SOURCE CONNECTION CARD ---
-            // Height=90px: Padding.Top=18 + Title=32 + 2gap + Button=34 + 4bottom = 90
-            var cardSource = CreateCardPanel("SOURCE CONNECTION (New/Dev Development)", 750, 90);
-            // Button at y=52: just below title (18+32=50) with 2px gap. Height=34 for better clickability.
-            var btnConfigNewDb = new Button { Text = "\u2299  Select Source Connection...", Width = 230, Height = 34, Location = new Point(15, 52) };
+            // Height=96px: Padding.Top=18 + Title=26 + Button=34 + bottom spacing = 96
+            var cardSource = CreateCardPanel("SOURCE CONNECTION (New/Dev Development)", 750, 96);
+            // Button at y=46: just below title (18+26=44) with 2px gap. Height=34 for better clickability.
+            var btnConfigNewDb = new Button { Text = "⊙  Select Source Connection...", Width = 230, Height = 34, Location = new Point(15, 46) };
             StyleButtonSecondary(btnConfigNewDb);
             btnConfigNewDb.Font = new Font(UIConstants.MainFontName, 9f);
-            // Badge at y=57: vertically centered within the 34px button zone (52+10=62 center, badge ~24 tall so top=50)
-            lblNewDbStatus = new Label { Text = "Not Configured", Location = new Point(258, 57), AutoSize = true, Padding = new Padding(10, 3, 10, 3) };
+            
+            var btnTestNewDb = new Button { Text = "⚡  Test Connection", Width = 140, Height = 34, Location = new Point(255, 46) };
+            StyleButtonSecondary(btnTestNewDb);
+            btnTestNewDb.Font = new Font(UIConstants.MainFontName, 9f);
+            
+            // Badge at y=46: vertically aligned with buttons (Y=46) and uses taller padding
+            lblNewDbStatus = new Label { Text = "Not Configured", Location = new Point(405, 46), AutoSize = true, Padding = new Padding(10, 8, 10, 8) };
             UpdateStatusBadge(lblNewDbStatus, null, "");
             btnConfigNewDb.Click += (s, e) => { using (var dlg = new ConnectionDialog("Source Database Connection", _newDbConfig)) { if (dlg.ShowDialog() == DialogResult.OK) { _newDbConfig = dlg.Config; UpdateConnectionLabels(); } } };
-            cardSource.Controls.Add(btnConfigNewDb); cardSource.Controls.Add(lblNewDbStatus);
+            btnTestNewDb.Click += async (s, e) => {
+                if (_newDbConfig == null) {
+                    MessageBox.Show("Please select a Source connection first.", "Test Connection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                btnTestNewDb.Text = "⌛ Testing...";
+                btnTestNewDb.Enabled = false;
+                try {
+                    await using (var conn = new Npgsql.NpgsqlConnection(_newDbConfig.GetConnectionString())) {
+                        await conn.OpenAsync();
+                    }
+                    MessageBox.Show("Connection to Source Database succeeded!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex) {
+                    MessageBox.Show($"Connection failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally {
+                    btnTestNewDb.Text = "⚡  Test Connection";
+                    btnTestNewDb.Enabled = true;
+                }
+            };
+            cardSource.Controls.Add(btnConfigNewDb); cardSource.Controls.Add(btnTestNewDb); cardSource.Controls.Add(lblNewDbStatus);
             panelConfig.Controls.Add(cardSource);
 
             // --- TARGET CONNECTION CARD --- (same dimensions as source)
-            var cardTarget = CreateCardPanel("TARGET CONNECTION (Old/Prod Maintenance)", 750, 90);
+            var cardTarget = CreateCardPanel("TARGET CONNECTION (Old/Prod Maintenance)", 750, 96);
             cardTarget.Margin = new Padding(0, 8, 0, 0);
-            var btnConfigOldDb = new Button { Text = "\u2299  Select Target Connection...", Width = 230, Height = 34, Location = new Point(15, 52) };
+            var btnConfigOldDb = new Button { Text = "⊙  Select Target Connection...", Width = 230, Height = 34, Location = new Point(15, 46) };
             StyleButtonSecondary(btnConfigOldDb);
             btnConfigOldDb.Font = new Font(UIConstants.MainFontName, 9f);
-            lblOldDbStatus = new Label { Text = "Not Configured", Location = new Point(258, 57), AutoSize = true, Padding = new Padding(10, 3, 10, 3) };
+            
+            var btnTestOldDb = new Button { Text = "⚡  Test Connection", Width = 140, Height = 34, Location = new Point(255, 46) };
+            StyleButtonSecondary(btnTestOldDb);
+            btnTestOldDb.Font = new Font(UIConstants.MainFontName, 9f);
+            
+            lblOldDbStatus = new Label { Text = "Not Configured", Location = new Point(405, 46), AutoSize = true, Padding = new Padding(10, 8, 10, 8) };
             UpdateStatusBadge(lblOldDbStatus, null, "");
             btnConfigOldDb.Click += (s, e) => { using (var dlg = new ConnectionDialog("Target Database Connection", _oldDbConfig)) { if (dlg.ShowDialog() == DialogResult.OK) { _oldDbConfig = dlg.Config; UpdateConnectionLabels(); } } };
-            cardTarget.Controls.Add(btnConfigOldDb); cardTarget.Controls.Add(lblOldDbStatus);
+            btnTestOldDb.Click += async (s, e) => {
+                if (_oldDbConfig == null) {
+                    MessageBox.Show("Please select a Target connection first.", "Test Connection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                btnTestOldDb.Text = "⌛ Testing...";
+                btnTestOldDb.Enabled = false;
+                try {
+                    await using (var conn = new Npgsql.NpgsqlConnection(_oldDbConfig.GetConnectionString())) {
+                        await conn.OpenAsync();
+                    }
+                    MessageBox.Show("Connection to Target Database succeeded!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex) {
+                    MessageBox.Show($"Connection failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally {
+                    btnTestOldDb.Text = "⚡  Test Connection";
+                    btnTestOldDb.Enabled = true;
+                }
+            };
+            cardTarget.Controls.Add(btnConfigOldDb); cardTarget.Controls.Add(btnTestOldDb); cardTarget.Controls.Add(lblOldDbStatus);
             panelConfig.Controls.Add(cardTarget);
 
             // --- GENERAL SETTINGS CARD ---
-            // Height: 52(offset) + 5×42(rows) + 15(padding bottom) = 277px
-            var cardSettings = CreateCardPanel("GENERAL PROJECT SETTINGS", 750, 277);
+            // Height: 46(offset) + 5×42(rows) + 15(padding bottom) = 271px
+            var cardSettings = CreateCardPanel("GENERAL PROJECT SETTINGS", 750, 271);
             cardSettings.Margin = new Padding(0, 8, 0, 0);
 
             var pnlSettingsGrid = new TableLayoutPanel {
-                Location = new Point(0, 52),   // Padding.Top(18) + title(32) + 2px gap
+                Location = new Point(0, 46),   // Padding.Top(18) + title(26) + 2px gap
                 Width = 720,
                 Height = 210,                   // exactly 5 rows × 42px
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
@@ -338,6 +400,7 @@ namespace ReleasePrepTool.UI
             txtReleaseVersion = AddSettingRow(pnlSettingsGrid, "Release Version:", "4.0.3");
             txtReleasePath   = AddSettingRow(pnlSettingsGrid, "Release Output Path:", @"C:\PROJECT_LCM\output", true);
             txtAiKey         = AddSettingRow(pnlSettingsGrid, "AI API Key (optional):", "", false, true);
+            txtAiKey.TextChanged += (s, e) => UpdateAiReadinessStatus();
 
             cardSettings.Controls.Add(pnlSettingsGrid);
             panelConfig.Controls.Add(cardSettings);
@@ -415,16 +478,27 @@ namespace ReleasePrepTool.UI
             };
 
             // --- CARD: Restore Action ---
-            var cardRestore = CreateCardPanel("RESTORE FROM BACKUP FILE", 800, 150);
+            var cardRestore = CreateCardPanel("RESTORE FROM BACKUP FILE", 800, 178);
             
-            // Row 1: Connection Selection
-            var pnlConnRow = new FlowLayoutPanel { Width = 750, Height = 40, FlowDirection = FlowDirection.LeftToRight, Location = new Point(15, 52) };
-            var lblConnLabel = new Label { Text = "Target Connection:", Width = 115, Height = 36, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
-            cmbRestoreConnection = new ComboBox { Name = "cmbRestoreConnection", Width = 230, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 9f), Margin = new Padding(8, 4, 0, 0) };
+            var pnlRestoreGrid = new TableLayoutPanel {
+                Location = new Point(15, 40),
+                Width = 750,
+                Height = 120,
+                ColumnCount = 4,
+                RowCount = 3
+            };
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+
+            var lblConnLabel = new Label { Text = "Connection:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            cmbRestoreConnection = new ComboBox { Name = "cmbRestoreConnection", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 9f) };
             cmbRestoreConnection.Items.AddRange(new string[] { "Source (Dev)", "Target (Prod)", "Custom Connection..." });
             cmbRestoreConnection.SelectedIndex = 0;
-            pnlConnRow.Controls.AddRange(new Control[] { lblConnLabel, cmbRestoreConnection });
-            cardRestore.Controls.Add(pnlConnRow);
 
             cmbRestoreConnection.SelectedIndexChanged += async (s, e) => {
                 if (cmbRestoreConnection.SelectedIndex == 2) // Custom
@@ -440,27 +514,52 @@ namespace ReleasePrepTool.UI
                 }
             };
 
-            // Row 2: Restore Params
-            var pnlRestoreRow = new FlowLayoutPanel { Width = 750, Height = 50, FlowDirection = FlowDirection.LeftToRight, Location = new Point(15, 92) };
-            btnBackupOld = new Button { Text = "\u21BB  Restore DB from File...", Width = 230, Height = 36, Margin = new Padding(0, 0, 15, 0) };
-            StyleButtonSecondary(btnBackupOld); btnBackupOld.Font = new Font(UIConstants.MainFontName, 9f);
-            var lblTargetDb = new Label { Text = "Target DB Name:", Width = 115, Height = 36, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
-            var txtTargetDbName = new TextBox { Width = 240, Height = 28, Margin = new Padding(8, 4, 5, 0), PlaceholderText = "e.g. my_prod_restore_v1", Font = new Font(UIConstants.MainFontName, 9f) };
-            
+            var lblTargetDb = new Label { Text = "Database Name:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            var txtTargetDbName = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), PlaceholderText = "e.g. my_prod_restore_v1", Font = new Font(UIConstants.MainFontName, 9f), BorderStyle = BorderStyle.FixedSingle };
+
+            var lblRestoreFile = new Label { Text = "Backup File:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            var txtRestoreFilePath = new TextBox { Name = "txtRestoreFilePath", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, Font = new Font(UIConstants.MainFontName, 9f), PlaceholderText = "Select .backup or .sql file..." };
+            var btnBrowseRestoreFile = new Button { Text = "Browse...", Width = 80, Height = 28, Anchor = AnchorStyles.Left, Margin = new Padding(8, 0, 0, 0), Font = new Font(UIConstants.MainFontName, 9f) };
+            StyleButtonSecondary(btnBrowseRestoreFile);
+
+            btnBrowseRestoreFile.Click += (s, e) => {
+                using (var ofd = new OpenFileDialog { Filter = "Backup Files (*.backup)|*.backup|SQL Scripts (*.sql)|*.sql" }) {
+                    if (ofd.ShowDialog() == DialogResult.OK) {
+                        txtRestoreFilePath.Text = ofd.FileName;
+                    }
+                }
+            };
+
+            btnBackupOld = new Button { Text = "↻  Restore DB from File...", Width = 230, Height = 40, Anchor = AnchorStyles.Right | AnchorStyles.None, Margin = new Padding(0, 0, 0, 0) };
+            StyleButtonPrimary(btnBackupOld); btnBackupOld.Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold);
+
             btnBackupOld.Click += (object? s, EventArgs e) => {
-                var selectedService = cmbRestoreConnection.SelectedIndex == 2 ? _customRestorePgService : (cmbRestoreConnection.SelectedIndex == 1 ? _newPgService : _oldPgService);
-                var defaultDbName = cmbRestoreConnection.SelectedIndex == 2 ? (_customRestoreConfig?.DatabaseName ?? "") : (cmbRestoreConnection.SelectedIndex == 1 ? NewDbName : OldDbName);
+                if (string.IsNullOrWhiteSpace(txtRestoreFilePath.Text)) {
+                    MessageBox.Show("Please select a backup or SQL file to restore first.", "No File Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                var selectedService = cmbRestoreConnection.SelectedIndex == 2 ? _customRestorePgService : (cmbRestoreConnection.SelectedIndex == 0 ? _newPgService : _oldPgService);
+                var defaultDbName = cmbRestoreConnection.SelectedIndex == 2 ? (_customRestoreConfig?.DatabaseName ?? "") : (cmbRestoreConnection.SelectedIndex == 0 ? NewDbName : OldDbName);
                 
                 if (cmbRestoreConnection.SelectedIndex == 2 && selectedService == null) {
                     MessageBox.Show("Please select a valid custom connection first.", "Custom Connection Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                RestoreDbAsync(selectedService, defaultDbName, txtTargetDbName.Text.Trim());
+                RestoreDbAsync(selectedService, defaultDbName, txtTargetDbName.Text.Trim(), txtRestoreFilePath.Text);
             };
 
-            pnlRestoreRow.Controls.AddRange(new Control[] { btnBackupOld, lblTargetDb, txtTargetDbName });
-            cardRestore.Controls.Add(pnlRestoreRow);
+            pnlRestoreGrid.Controls.Add(lblConnLabel, 0, 0);
+            pnlRestoreGrid.Controls.Add(cmbRestoreConnection, 1, 0);
+            pnlRestoreGrid.Controls.Add(lblTargetDb, 0, 1);
+            pnlRestoreGrid.Controls.Add(txtTargetDbName, 1, 1);
+            pnlRestoreGrid.Controls.Add(lblRestoreFile, 0, 2);
+            pnlRestoreGrid.Controls.Add(txtRestoreFilePath, 1, 2);
+            pnlRestoreGrid.Controls.Add(btnBrowseRestoreFile, 2, 2);
+            pnlRestoreGrid.Controls.Add(btnBackupOld, 3, 0);
+            pnlRestoreGrid.SetRowSpan(btnBackupOld, 3);
+
+            cardRestore.Controls.Add(pnlRestoreGrid);
 
             // --- LOG HEADER ---
             var lblLogHeader = new Label {
@@ -495,7 +594,7 @@ namespace ReleasePrepTool.UI
                 var w = Math.Max(400, panelBackup.ClientSize.Width - panelBackup.Padding.Horizontal);
                 pnlBackupTop.Width = w;
                 cardRestore.Width = w;
-                pnlRestoreRow.Width = Math.Max(200, w - 30);
+                pnlRestoreGrid.Width = Math.Max(200, w - 30);
             }
             panelBackup.SizeChanged += (s, e) => UpdateBackupWidths();
             panelBackup.HandleCreated += (s, e) => UpdateBackupWidths();
@@ -849,6 +948,16 @@ namespace ReleasePrepTool.UI
             tooltip.SetToolTip(btnEditData, "Edit/Review generated data sync script");
             btnEditData.Click += (s, e) => { if (!string.IsNullOrEmpty(_lastDataExportPath)) OpenSqlEditor(_lastDataExportPath, "Review Data Sync Script"); };
             pnlDataActions.Controls.Add(btnEditData);
+
+            pnlDataStatusLabels = new FlowLayoutPanel { 
+                FlowDirection = FlowDirection.LeftToRight,
+                AutoSize = true,
+                Margin = new Padding(8, 2, 0, 0),
+                Padding = new Padding(0),
+                WrapContents = false,
+                Height = 32
+            };
+            pnlDataActions.Controls.Add(pnlDataStatusLabels);
 
             var lblSeparator = new Label { Width = 2, Height = 30, BackColor = UIConstants.Border, Margin = new Padding(15, 3, 15, 0) };
 
@@ -1378,6 +1487,7 @@ namespace ReleasePrepTool.UI
             dgvJunkDataResults.CellClick += DgvJunkDataResults_CellClick;
             dgvJunkDataResults.SelectionChanged += DgvJunkDataResults_SelectionChanged;
             dgvJunkDataResults.CellMouseClick += DgvJunkDataResults_CellMouseClick;
+            dgvJunkDataResults.ColumnHeaderMouseClick += DgvJunkDataResults_ColumnHeaderMouseClick;
 
             cmbJunkConnection.SelectedIndexChanged += async (s, e) => {
                 if (cmbJunkConnection.SelectedIndex == 2) // Custom
@@ -1407,12 +1517,89 @@ namespace ReleasePrepTool.UI
                 Font = new Font(UIConstants.MainFontName, 9.5f), ForeColor = UIConstants.TextSecondary
             };
 
-            var cardFinal = CreateCardPanel("FINAL DATABASE EXPORT", 800, 110);
+            var cardFinal = CreateCardPanel("FINAL DATABASE EXPORT", 800, 230);
             cardFinal.Dock = DockStyle.Top;
-            var btnExportFinal = new Button { Text = "\uD83D\uDCE6  Generate Production Export (Backup + SQL)", Width = 400, Height = 40, Location = new Point(15, 52) };
+
+            var pnlFinalGrid = new TableLayoutPanel {
+                Location = new Point(15, 40),
+                Width = 750,
+                Height = 80,
+                ColumnCount = 3,
+                RowCount = 2
+            };
+            pnlFinalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            pnlFinalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
+            pnlFinalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            pnlFinalGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            pnlFinalGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
+            var lblExportConn = new Label { Text = "Connection:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            cmbFinalExportConnection = new ComboBox { Name = "cmbFinalExportConnection", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 9f) };
+            cmbFinalExportConnection.Items.AddRange(new string[] { "Source (Dev)", "Target (Prod)", "Custom Connection..." });
+            cmbFinalExportConnection.SelectedIndex = 1; // Default to Target (Prod)
+
+            var lblExportDb = new Label { Text = "Target Databases:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            
+            var pnlDbButtons = new FlowLayoutPanel { Anchor = AnchorStyles.Left | AnchorStyles.Right, Height = 26, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0) };
+            var btnSelectAllDbs = new Button { Text = "✔  All", Width = 70, Height = 26, Margin = new Padding(0, 0, 8, 0) };
+            StyleButtonSecondary(btnSelectAllDbs); btnSelectAllDbs.Font = new Font(UIConstants.MainFontName, 8.5f);
+            btnSelectAllDbs.Click += (s, e) => {
+                for (int i = 0; i < clbFinalExportDbs.Items.Count; i++)
+                    clbFinalExportDbs.SetItemChecked(i, true);
+            };
+
+            var btnUnselectAllDbs = new Button { Text = "✖  None", Width = 70, Height = 26, Margin = new Padding(0, 0, 0, 0) };
+            StyleButtonSecondary(btnUnselectAllDbs); btnUnselectAllDbs.Font = new Font(UIConstants.MainFontName, 8.5f);
+            btnUnselectAllDbs.Click += (s, e) => {
+                for (int i = 0; i < clbFinalExportDbs.Items.Count; i++)
+                    clbFinalExportDbs.SetItemChecked(i, false);
+            };
+            pnlDbButtons.Controls.AddRange(new Control[] { btnSelectAllDbs, btnUnselectAllDbs });
+
+            var btnExportFinal = new Button { Text = "📦  Export (Backup + Sql)", Width = 230, Height = 40, Anchor = AnchorStyles.Right | AnchorStyles.None, Margin = new Padding(0, 0, 0, 0) };
             StyleButtonPrimary(btnExportFinal); btnExportFinal.Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold);
             btnExportFinal.Click += BtnExportFinal_Click;
-            cardFinal.Controls.Add(btnExportFinal);
+
+            pnlFinalGrid.Controls.Add(lblExportConn, 0, 0);
+            pnlFinalGrid.Controls.Add(cmbFinalExportConnection, 1, 0);
+            pnlFinalGrid.Controls.Add(lblExportDb, 0, 1);
+            pnlFinalGrid.Controls.Add(pnlDbButtons, 1, 1);
+            pnlFinalGrid.Controls.Add(btnExportFinal, 2, 0);
+            pnlFinalGrid.SetRowSpan(btnExportFinal, 2);
+
+            cardFinal.Controls.Add(pnlFinalGrid);
+
+            clbFinalExportDbs = new CheckedListBox {
+                Name = "clbFinalExportDbs",
+                Location = new Point(15, 128),
+                Width = 760,
+                Height = 84,
+                CheckOnClick = true,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font(UIConstants.MainFontName, 9f),
+                MultiColumn = true,
+                ColumnWidth = 180
+            };
+            cardFinal.Controls.Add(clbFinalExportDbs);
+
+            cmbFinalExportConnection.SelectedIndexChanged += async (s, e) => {
+                if (cmbFinalExportConnection.SelectedIndex == 2) // Custom
+                {
+                    using (var dlg = new ConnectionDialog("Custom Database Connection", _customFinalExportConfig))
+                    {
+                        if (dlg.ShowDialog() == DialogResult.OK)
+                        {
+                            _customFinalExportConfig = dlg.Config;
+                            _customFinalExportPgService = new PostgresService(_customFinalExportConfig!) { PostgresBinPath = txtPgBinPath.Text };
+                            await LoadFinalExportDbsAsync();
+                        }
+                    }
+                }
+                else
+                {
+                    await LoadFinalExportDbsAsync();
+                }
+            };
 
             var spacerFinal1 = new Panel { Dock = DockStyle.Top, Height = 16 };
 
@@ -1431,6 +1618,9 @@ namespace ReleasePrepTool.UI
             void UpdateExportWidths() {
                 var w = Math.Max(400, pnlFinalMain.ClientSize.Width - pnlFinalMain.Padding.Horizontal);
                 cardFinal.Width = w;
+                var contentWidth = Math.Max(200, w - 30);
+                pnlFinalGrid.Width = contentWidth;
+                clbFinalExportDbs.Width = contentWidth;
             }
             pnlFinalMain.SizeChanged += (s, e) => UpdateExportWidths();
             pnlFinalMain.HandleCreated += (s, e) => UpdateExportWidths();
@@ -1453,10 +1643,16 @@ namespace ReleasePrepTool.UI
             };
 
             // Card: Config file selection
-            var cardConfigSetup = CreateCardPanel("ENVIRONMENT CONFIGURATION COMPARISON", 800, 220);
+            var cardConfigSetup = CreateCardPanel("ENVIRONMENT CONFIGURATION COMPARISON", 800, 249);
             cardConfigSetup.Dock = DockStyle.Top;
+
+            rbCompareFile = new RadioButton { Text = "Compare Files", Location = new Point(15, 46), AutoSize = true, Checked = true, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            rbCompareFolder = new RadioButton { Text = "Compare Folders", Location = new Point(155, 46), AutoSize = true, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            cardConfigSetup.Controls.Add(rbCompareFile);
+            cardConfigSetup.Controls.Add(rbCompareFolder);
+
             var pnlConfigBody = new TableLayoutPanel {
-                Location = new Point(0, 36), Width = 760, Height = 110,
+                Location = new Point(15, 76), Width = 760, Height = 110,
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ColumnCount = 2, RowCount = 3, Padding = new Padding(5, 2, 5, 0)
             };
@@ -1482,9 +1678,8 @@ namespace ReleasePrepTool.UI
             pnlConfigBody.Controls.Add(btnSelectOldConfig, 0, 2);
             pnlConfigBody.Controls.Add(btnSelectNewConfig, 1, 2);
 
-            btnCompareConfig = new Button { Text = "\u2194  Analyze Configuration Differences", Width = 300, Height = 36, Location = new Point(15, 170) };
+            btnCompareConfig = new Button { Text = "\u2194  Analyze Configuration Differences", Width = 300, Height = 36, Location = new Point(15, 202) };
             StyleButtonPrimary(btnCompareConfig); btnCompareConfig.Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold);
-            pnlConfigBody.Location = new Point(15, 52); // Fix title overlap and add left margin
 
             cardConfigSetup.Controls.Add(pnlConfigBody);
             cardConfigSetup.Controls.Add(btnCompareConfig);
@@ -1494,11 +1689,11 @@ namespace ReleasePrepTool.UI
                 var w = Math.Max(400, pnlConfigMain.ClientSize.Width - pnlConfigMain.Padding.Horizontal);
                 cardConfigSetup.Width = w;
                 pnlConfigBody.Width = Math.Max(200, cardConfigSetup.ClientSize.Width - 30);
-                btnCompareConfig.Location = new Point(15, 170);
+                btnCompareConfig.Location = new Point(15, 202);
             }
             pnlConfigMain.SizeChanged += (s, e) => UpdateConfigWidths();
             pnlConfigMain.HandleCreated += (s, e) => UpdateConfigWidths();
-            cardConfigSetup.SizeChanged += (s, e) => pnlConfigBody.Width = Math.Max(200, cardConfigSetup.ClientSize.Width);
+            cardConfigSetup.SizeChanged += (s, e) => pnlConfigBody.Width = Math.Max(200, cardConfigSetup.ClientSize.Width - 30);
 
             // Log section
             var spacerConfig1 = new Panel { Dock = DockStyle.Top, Height = 16 };
@@ -1519,9 +1714,80 @@ namespace ReleasePrepTool.UI
             pnlConfigMain.Controls.Add(lblConfigIntro);       // Top (topmost priority, added last)
 
             tabConfigCompare.Controls.Add(pnlConfigMain);
-            btnSelectOldConfig.Click += (s, e) => SelectFile(txtOldConfigPath, "JSON files (*.json)|*.json|ENV files (*.env)|*.env");
-            btnSelectNewConfig.Click += (s, e) => SelectFile(txtNewConfigPath, "JSON files (*.json)|*.json|ENV files (*.env)|*.env");
+
+            rbCompareFile.CheckedChanged += (s, e) => {
+                if (rbCompareFile.Checked) {
+                    lblOldConfig.Text = "Source Config File:";
+                    lblNewConfig.Text = "Target Config File:";
+                    btnSelectOldConfig.Text = "\uD83D\uDCC1  Browse Source Config";
+                    btnSelectNewConfig.Text = "\uD83D\uDCC1  Browse Target Config";
+                    if (!_suppressConfigEvents) {
+                        _suppressConfigEvents = true;
+                        try {
+                            txtOldConfigPath.Text = _configCompareSourceFile;
+                            txtNewConfigPath.Text = _configCompareTargetFile;
+                        } finally {
+                            _suppressConfigEvents = false;
+                        }
+                        SaveConfig();
+                    }
+                }
+            };
+            rbCompareFolder.CheckedChanged += (s, e) => {
+                if (rbCompareFolder.Checked) {
+                    lblOldConfig.Text = "Source Config Folder:";
+                    lblNewConfig.Text = "Target Config Folder:";
+                    btnSelectOldConfig.Text = "\uD83D\uDCC1  Browse Source Folder";
+                    btnSelectNewConfig.Text = "\uD83D\uDCC1  Browse Target Folder";
+                    if (!_suppressConfigEvents) {
+                        _suppressConfigEvents = true;
+                        try {
+                            txtOldConfigPath.Text = _configCompareSourceFolder;
+                            txtNewConfigPath.Text = _configCompareTargetFolder;
+                        } finally {
+                            _suppressConfigEvents = false;
+                        }
+                        SaveConfig();
+                    }
+                }
+            };
+
+            btnSelectOldConfig.Click += (s, e) => {
+                if (rbCompareFolder.Checked) {
+                    SelectFolder(txtOldConfigPath);
+                } else {
+                    SelectFile(txtOldConfigPath, "JSON files (*.json)|*.json|ENV files (*.env)|*.env");
+                }
+            };
+            btnSelectNewConfig.Click += (s, e) => {
+                if (rbCompareFolder.Checked) {
+                    SelectFolder(txtNewConfigPath);
+                } else {
+                    SelectFile(txtNewConfigPath, "JSON files (*.json)|*.json|ENV files (*.env)|*.env");
+                }
+            };
             btnCompareConfig.Click += BtnCompareConfig_Click;
+
+            txtOldConfigPath.TextChanged += (s, e) => {
+                if (!_suppressConfigEvents) {
+                    if (rbCompareFolder.Checked) {
+                        _configCompareSourceFolder = txtOldConfigPath.Text;
+                    } else {
+                        _configCompareSourceFile = txtOldConfigPath.Text;
+                    }
+                    SaveConfig();
+                }
+            };
+            txtNewConfigPath.TextChanged += (s, e) => {
+                if (!_suppressConfigEvents) {
+                    if (rbCompareFolder.Checked) {
+                        _configCompareTargetFolder = txtNewConfigPath.Text;
+                    } else {
+                        _configCompareTargetFile = txtNewConfigPath.Text;
+                    }
+                    SaveConfig();
+                }
+            };
 
             // 9. AI Review Tab
             var tabAi = new TabPage("9. AI Review") { BackColor = Color.White };
@@ -1533,48 +1799,92 @@ namespace ReleasePrepTool.UI
                 Font = new Font(UIConstants.MainFontName, 9.5f), ForeColor = UIConstants.TextSecondary
             };
 
-            var cardAiActions = CreateCardPanel("AI-POWERED VALIDATION", 800, 120);
-            cardAiActions.Dock = DockStyle.Top;
-            var pnlAiBtns = new FlowLayoutPanel { Width = 750, Height = 50, FlowDirection = FlowDirection.LeftToRight, Location = new Point(15, 52) };
+            var pnlAiActionHost = new Panel { Dock = DockStyle.Top, Height = 162, BackColor = Color.White };
+            var cardAiActions = CreateCardPanel("AI-POWERED VALIDATION", 800, 154);
+            cardAiActions.Dock = DockStyle.Fill;
+            var pnlAiBtns = new FlowLayoutPanel { Width = 570, Height = 40, FlowDirection = FlowDirection.LeftToRight, Location = new Point(15, 76), WrapContents = false };
+            var pnlAiReadiness = new Panel { Width = 310, Height = 90, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            lblAiKeyReadiness = new Label { AutoSize = false, Width = 300, Height = 20, Location = new Point(0, 0), Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold) };
+            lblAiSchemaReadiness = new Label { AutoSize = false, Width = 300, Height = 20, Location = new Point(0, 22), Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold) };
+            lblAiDataReadiness = new Label { AutoSize = false, Width = 300, Height = 20, Location = new Point(0, 44), Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold) };
+            lblAiConfigReadiness = new Label { AutoSize = false, Width = 300, Height = 20, Location = new Point(0, 66), Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold) };
             
-            btnReviewSchema = new Button { Text = "\u2728  Review Schema Changes", Width = 230, Height = 36, Margin = new Padding(0, 0, 10, 0) };
+            btnReviewSchema = new Button { Text = "\u2728  Review Schema Changes", Width = 180, Height = 34, Margin = new Padding(0, 0, 12, 0) };
             StyleButtonPrimary(btnReviewSchema); btnReviewSchema.Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold);
             
-            btnReviewConfig = new Button { Text = "\u2728  Audit Configuration Diff", Width = 230, Height = 36 };
+            btnReviewData = new Button { Text = "\u2728  Review Data Changes", Width = 180, Height = 34, Margin = new Padding(0, 0, 12, 0) };
+            StyleButtonPrimary(btnReviewData); btnReviewData.Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold);
+            
+            btnReviewConfig = new Button { Text = "\u2728  Audit Configuration Diff", Width = 180, Height = 34, Margin = new Padding(0, 0, 0, 0) };
             StyleButtonPrimary(btnReviewConfig); btnReviewConfig.Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold);
             
             btnReviewSchema.Click += BtnReviewSchema_Click;
+            btnReviewData.Click += BtnReviewData_Click;
             btnReviewConfig.Click += BtnReviewConfig_Click;
-
+            tooltip.SetToolTip(btnReviewSchema, "Validate the generated schema SQL script with AI.");
+            tooltip.SetToolTip(btnReviewData, "Validate the generated data sync SQL script with AI.");
+            tooltip.SetToolTip(btnReviewConfig, "Audit configuration differences from the Config Compare tab with AI.");
+ 
             pnlAiBtns.Controls.Add(btnReviewSchema);
+            pnlAiBtns.Controls.Add(btnReviewData);
             pnlAiBtns.Controls.Add(btnReviewConfig);
             cardAiActions.Controls.Add(pnlAiBtns);
-
-            var spacerAi1 = new Panel { Dock = DockStyle.Top, Height = 16 };
+            pnlAiReadiness.Controls.Add(lblAiKeyReadiness);
+            pnlAiReadiness.Controls.Add(lblAiSchemaReadiness);
+            pnlAiReadiness.Controls.Add(lblAiDataReadiness);
+            pnlAiReadiness.Controls.Add(lblAiConfigReadiness);
+            cardAiActions.Controls.Add(pnlAiReadiness);
+            pnlAiActionHost.Controls.Add(cardAiActions);
+ 
+            var spacerAi1 = new Panel { Dock = DockStyle.Top, Height = 12 };
             var lblAiLogHeader = new Label {
                 Text = "\uD83D\u2728  AI AUDIT LOG", Dock = DockStyle.Top, Height = 28,
                 Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.TextSecondary,
                 TextAlign = ContentAlignment.MiddleLeft
             };
-
+ 
+            lblAiReviewStatus = new Label {
+                Text = "Ready - Choose an AI review action",
+                Dock = DockStyle.Top,
+                Height = 22,
+                Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold),
+                ForeColor = Color.DarkGreen,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+ 
             var pnlAiLog = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = UIConstants.ConsoleBg };
             txtAiReviewLog = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, ReadOnly = true };
             StyleTextBoxConsole(txtAiReviewLog);
+            txtAiReviewLog.Text = "No AI output yet.\r\n\r\nNext steps:\r\n1) Click 'Review Schema Changes' after generating schema script (Tab 3).\r\n2) Click 'Review Data Changes' after generating data sync script (Tab 4).\r\n3) Click 'Audit Configuration Diff' after running config compare (Tab 8).";
             pnlAiLog.Controls.Add(txtAiReviewLog);
-
+ 
             // Responsive widths
             void UpdateAiWidths() {
                 var w = Math.Max(400, pnlAiMain.ClientSize.Width - pnlAiMain.Padding.Horizontal);
                 cardAiActions.Width = w;
-                pnlAiBtns.Width = Math.Max(200, w - 30);
+                var showReadiness = w >= 980;
+                pnlAiReadiness.Visible = showReadiness;
+                pnlAiReadiness.Location = new Point(Math.Max(15, cardAiActions.ClientSize.Width - pnlAiReadiness.Width - 18), 54);
+                
+                var maxButtonsWidth = showReadiness ? Math.Max(560, cardAiActions.ClientSize.Width - pnlAiReadiness.Width - 52) : Math.Max(200, cardAiActions.ClientSize.Width - 30);
+                var actionButtonWidth = Math.Max(180, Math.Min(280, (maxButtonsWidth - 24) / 3));
+                var buttonsTotalWidth = 3 * actionButtonWidth + 24;
+                
+                pnlAiBtns.Width = buttonsTotalWidth;
+                pnlAiBtns.Location = new Point(15 + (maxButtonsWidth - buttonsTotalWidth) / 2, 76);
+                
+                btnReviewSchema.Width = actionButtonWidth;
+                btnReviewData.Width = actionButtonWidth;
+                btnReviewConfig.Width = actionButtonWidth;
             }
             pnlAiMain.SizeChanged += (s, e) => UpdateAiWidths();
             pnlAiMain.HandleCreated += (s, e) => UpdateAiWidths();
 
             pnlAiMain.Controls.Add(pnlAiLog);          // Fill (bottom priority, added first)
+            pnlAiMain.Controls.Add(lblAiReviewStatus); // Top
             pnlAiMain.Controls.Add(lblAiLogHeader);    // Top
             pnlAiMain.Controls.Add(spacerAi1);
-            pnlAiMain.Controls.Add(cardAiActions);     // Top
+            pnlAiMain.Controls.Add(pnlAiActionHost);    // Top
             pnlAiMain.Controls.Add(lblAiIntro);         // Top (topmost priority, added last)
             
             tabAi.Controls.Add(pnlAiMain);
@@ -1592,11 +1902,14 @@ namespace ReleasePrepTool.UI
             tabControl.SelectedIndexChanged += async (s, e) => {
                 if ((tabControl.SelectedTab == tabCompareSchema || tabControl.SelectedTab == tabCompareData) && cmbSourceDb.Items.Count == 0)
                     await LoadDatabaseListsAsync();
+                if (tabControl.SelectedTab == tabAi)
+                    UpdateAiReadinessStatus();
             };
             
             this.FormClosing += (s, e) => SaveConfig();
             this.Load += async (s, e) => {
                 LoadConfig();
+                UpdateAiReadinessStatus();
                 
                 // Pre-load database lists for both comparison tabs if config is present
                 if (_oldDbConfig != null && _newDbConfig != null) {
@@ -1634,6 +1947,7 @@ namespace ReleasePrepTool.UI
                 _junkService = new JunkAnalysisService(_oldPgService);
 
                 _fileSystemService.EnsureDirectoryStructure();
+                UpdateAiReadinessStatus();
                 return true;
             }
             catch (Exception ex)
@@ -1660,6 +1974,7 @@ namespace ReleasePrepTool.UI
 
                 _fileSystemService.EnsureDirectoryStructure();
                 SaveConfig(); 
+                UpdateAiReadinessStatus();
                 await LoadDatabaseListsAsync(); // Auto-load DB lists for comparison
                 MessageBox.Show($"Services initialized and directory structure created at {_fileSystemService.BaseReleasePath}");
             }
@@ -1669,7 +1984,7 @@ namespace ReleasePrepTool.UI
             }
         }
 
-        private async void RestoreDbAsync(PostgresService? service, string dbName, string targetDbName = "")
+        private async void RestoreDbAsync(PostgresService? service, string dbName, string targetDbName, string filePath)
         {
             if (!EnsureServicesInitialized()) return;
             // Re-assign from fields if necessary.
@@ -1677,35 +1992,44 @@ namespace ReleasePrepTool.UI
             if (activeService == null) return;
 
             var effectiveName = string.IsNullOrWhiteSpace(targetDbName) ? dbName : targetDbName;
-            using (var ofd = new OpenFileDialog { Filter = "Backup Files (*.backup)|*.backup|SQL Scripts (*.sql)|*.sql" })
+            
+            // Get active connection details
+            DatabaseConfig? targetConfig = null;
+            if (cmbRestoreConnection.SelectedIndex == 2) {
+                targetConfig = _customRestoreConfig;
+            } else if (cmbRestoreConnection.SelectedIndex == 0) {
+                targetConfig = _newDbConfig;
+            } else {
+                targetConfig = _oldDbConfig;
+            }
+
+            if (targetConfig != null) {
+                txtBackupLog.AppendText($"Starting restore into '{effectiveName}' on database server '{targetConfig.Host}:{targetConfig.Port}' (User: {targetConfig.Username}) from {filePath}...\r\n");
+            } else {
+                txtBackupLog.AppendText($"Starting restore into '{effectiveName}' from {filePath}...\r\n");
+            }
+            btnBackupOld.Enabled = false;
+            try
             {
-                if (ofd.ShowDialog() == DialogResult.OK)
+                var ext = Path.GetExtension(filePath).ToLower();
+                // Thread-safe callback: marshal each line onto the UI thread
+                Action<string> onOutput = line =>
                 {
-                    txtBackupLog.AppendText($"Starting restore into '{effectiveName}' from {ofd.FileName}...\r\n");
-                    btnBackupOld.Enabled = false;
-                    try
-                    {
-                        var ext = Path.GetExtension(ofd.FileName).ToLower();
-                        // Thread-safe callback: marshal each line onto the UI thread
-                        Action<string> onOutput = line =>
-                        {
-                            if (txtBackupLog != null && txtBackupLog.InvokeRequired)
-                                txtBackupLog.Invoke(() => txtBackupLog.AppendText(line + "\r\n"));
-                            else
-                                txtBackupLog?.AppendText(line + "\r\n");
-                        };
-                        await service.RestoreDatabaseAsync(ext, ofd.FileName, string.IsNullOrWhiteSpace(targetDbName) ? null : targetDbName, onOutput);
-                        txtBackupLog.AppendText($"✅ Restore into '{effectiveName}' completed successfully.\r\n");
-                    }
-                    catch (Exception ex)
-                    {
-                        txtBackupLog.AppendText($"❌ Error during restore: {ex.Message}\r\n");
-                    }
-                    finally
-                    {
-                        btnBackupOld.Enabled = true;
-                    }
-                }
+                    if (txtBackupLog != null && txtBackupLog.InvokeRequired)
+                        txtBackupLog.Invoke(() => txtBackupLog.AppendText(line + "\r\n"));
+                    else
+                        txtBackupLog?.AppendText(line + "\r\n");
+                };
+                await activeService.RestoreDatabaseAsync(ext, filePath, string.IsNullOrWhiteSpace(targetDbName) ? null : targetDbName, onOutput);
+                txtBackupLog.AppendText($"✅ Restore into '{effectiveName}' completed successfully.\r\n");
+            }
+            catch (Exception ex)
+            {
+                txtBackupLog.AppendText($"❌ Error during restore: {ex.Message}\r\n");
+            }
+            finally
+            {
+                btnBackupOld.Enabled = true;
             }
         }
 
@@ -2297,6 +2621,7 @@ namespace ReleasePrepTool.UI
                 var sql = sb.ToString();
                 var path = _fileSystemService!.GetSqlScriptPath(NewDbName, true);
                 _fileSystemService!.WriteToFile(path, sql);
+                _fileSystemService!.UpdateScriptUpdateNote();
                 pnlStatusLabels.Controls.Clear();
                 
                 string fileName = System.IO.Path.GetFileName(path);
@@ -2330,7 +2655,14 @@ namespace ReleasePrepTool.UI
                     OldConfig = _oldDbConfig,
                     NewConfig = _newDbConfig,
                     PgBin = txtPgBinPath.Text, Version = txtReleaseVersion.Text, 
-                    ReleasePath = txtReleasePath.Text, AiKey = txtAiKey.Text
+                    ReleasePath = txtReleasePath.Text, AiKey = txtAiKey.Text,
+                    ConfigCompareMode = rbCompareFolder.Checked ? "Folder" : "File",
+                    ConfigCompareSource = txtOldConfigPath.Text,
+                    ConfigCompareTarget = txtNewConfigPath.Text,
+                    ConfigCompareSourceFile = _configCompareSourceFile,
+                    ConfigCompareTargetFile = _configCompareTargetFile,
+                    ConfigCompareSourceFolder = _configCompareSourceFolder,
+                    ConfigCompareTargetFolder = _configCompareTargetFolder
                 };
                 File.WriteAllText("appsettings.local.json", Newtonsoft.Json.JsonConvert.SerializeObject(config));
             } catch { }
@@ -2356,7 +2688,31 @@ namespace ReleasePrepTool.UI
                         txtReleaseVersion.Text = (string?)config.Version ?? txtReleaseVersion.Text;
                         txtReleasePath.Text = (string?)config.ReleasePath ?? txtReleasePath.Text; 
                         txtAiKey.Text = (string?)config.AiKey ?? txtAiKey.Text;
+                        if (string.IsNullOrWhiteSpace(txtAiKey.Text)) {
+                            txtAiKey.Text = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? "";
+                        }
                         UpdateConnectionLabels();
+
+                        _configCompareSourceFile = (string?)config.ConfigCompareSourceFile ?? (string?)config.ConfigCompareSource ?? "";
+                        _configCompareTargetFile = (string?)config.ConfigCompareTargetFile ?? (string?)config.ConfigCompareTarget ?? "";
+                        _configCompareSourceFolder = (string?)config.ConfigCompareSourceFolder ?? (string?)config.ConfigCompareSource ?? "";
+                        _configCompareTargetFolder = (string?)config.ConfigCompareTargetFolder ?? (string?)config.ConfigCompareTarget ?? "";
+
+                        string? compMode = (string?)config.ConfigCompareMode;
+                        _suppressConfigEvents = true;
+                        try {
+                            if (compMode == "Folder") {
+                                rbCompareFolder.Checked = true;
+                                txtOldConfigPath.Text = _configCompareSourceFolder;
+                                txtNewConfigPath.Text = _configCompareTargetFolder;
+                            } else {
+                                rbCompareFile.Checked = true;
+                                txtOldConfigPath.Text = _configCompareSourceFile;
+                                txtNewConfigPath.Text = _configCompareTargetFile;
+                            }
+                        } finally {
+                            _suppressConfigEvents = false;
+                        }
                     }
                 }
             } catch { }
@@ -2411,6 +2767,8 @@ namespace ReleasePrepTool.UI
                 if (cmbSourceDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbSourceDataDb.SelectedItem.ToString()!, cmbSourceDataSchema, _newDbConfig);
                 if (cmbTargetDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbTargetDataDb.SelectedItem.ToString()!, cmbTargetDataSchema, _oldDbConfig);
 
+                // Load databases for final export
+                await LoadFinalExportDbsAsync();
             }
             catch (Exception ex) {
                 pnlStatusLabels.Controls.Clear();
@@ -2538,8 +2896,8 @@ namespace ReleasePrepTool.UI
             }
             catch (Exception ex)
             {
-                pnlStatusLabels.Controls.Clear();
-                AddStatusBadge($"Load Error: {ex.Message}", UIConstants.Danger);
+                pnlDataStatusLabels.Controls.Clear();
+                AddStatusBadge($"Load Error: {ex.Message}", UIConstants.Danger, null, pnlDataStatusLabels);
                 lblDataStatus.Text = "❌ Error loading tables.";
             }
             finally
@@ -2574,8 +2932,8 @@ namespace ReleasePrepTool.UI
                 .ToList();
 
             if (!checkedRows.Any()) { 
-                pnlStatusLabels.Controls.Clear();
-                AddStatusBadge("Select tables first", UIConstants.Warning);
+                pnlDataStatusLabels.Controls.Clear();
+                AddStatusBadge("Select tables first", UIConstants.Warning, null, pnlDataStatusLabels);
                 return; 
             }
 
@@ -2625,8 +2983,8 @@ namespace ReleasePrepTool.UI
                 }
             }
             catch (Exception ex) {
-                pnlStatusLabels.Controls.Clear();
-                AddStatusBadge($"Table Load Error: {ex.Message}", UIConstants.Danger);
+                pnlDataStatusLabels.Controls.Clear();
+                AddStatusBadge($"Table Load Error: {ex.Message}", UIConstants.Danger, null, pnlDataStatusLabels);
             }
             finally
             {
@@ -2677,8 +3035,8 @@ namespace ReleasePrepTool.UI
             }
             catch (Exception ex)
             {
-                pnlStatusLabels.Controls.Clear();
-                AddStatusBadge("Detail Load Error", UIConstants.Danger);
+                pnlDataStatusLabels.Controls.Clear();
+                AddStatusBadge("Detail Load Error", UIConstants.Danger, null, pnlDataStatusLabels);
                 Console.WriteLine(ex.ToString());
             }
             finally
@@ -2692,8 +3050,8 @@ namespace ReleasePrepTool.UI
         {
             var tablesToSync = GetSelectedTables();
             if (!tablesToSync.Any()) { 
-                pnlStatusLabels.Controls.Clear();
-                AddStatusBadge("Check tables first", UIConstants.Warning);
+                pnlDataStatusLabels.Controls.Clear();
+                AddStatusBadge("Check tables first", UIConstants.Warning, null, pnlDataStatusLabels);
                 return; 
             }
 
@@ -2711,21 +3069,24 @@ namespace ReleasePrepTool.UI
                 var options = GetDataCompareOptions();
                 var diffScript = await _dbCompareService!.GenerateDataDiffAsync(tablesToSync, sourceSchema, targetSchema, options);
                 
-                var fileName = $"data_sync_{DateTime.Now:yyyyMMdd_HHmmss}.sql";
-                var fullPath = _fileSystemService!.SaveSqlScript(fileName, diffScript, false);
+                var fullPath = _fileSystemService!.GetSqlScriptPath(NewDbName, false);
+                var dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                _fileSystemService!.WriteToFile(fullPath, diffScript);
+                _fileSystemService!.UpdateScriptUpdateNote();
                 _lastDataExportPath = fullPath;
                 
-                pnlStatusLabels.Controls.Clear();
+                pnlDataStatusLabels.Controls.Clear();
                 string fileNameOnly = System.IO.Path.GetFileName(fullPath);
                 
                 AddStatusBadge($"{UIConstants.IconCheck}  Exported: {fileNameOnly}", UIConstants.Success, () => {
                     if (!string.IsNullOrEmpty(fullPath) && File.Exists(fullPath))
                         Process.Start("explorer.exe", $"/select,\"{fullPath.Replace("/", "\\")}\"");
-                });
+                }, pnlDataStatusLabels);
 
                 AddStatusBadge($"{UIConstants.IconRobot}  Review with AI", UIConstants.Primary, () => {
                     tabControl.SelectedIndex = 8; // Switch to AI Review tab
-                });
+                }, pnlDataStatusLabels);
 
                 btnOpenDataFolder.Visible = true;
                 btnEditData.Visible = true;
@@ -2825,19 +3186,75 @@ namespace ReleasePrepTool.UI
             }
         }
 
+        private PostgresService? GetActiveFinalExportPgService()
+        {
+             if (cmbFinalExportConnection.SelectedIndex == 0) return _newPgService;
+             if (cmbFinalExportConnection.SelectedIndex == 1) return _oldPgService;
+             if (cmbFinalExportConnection.SelectedIndex == 2 && _customFinalExportPgService != null) return _customFinalExportPgService;
+             return _oldPgService;
+        }
+
+        private async Task LoadFinalExportDbsAsync()
+        {
+            var service = GetActiveFinalExportPgService();
+            if (service == null) return;
+            try
+            {
+                var dbs = await service.GetAllDatabasesAsync();
+                clbFinalExportDbs.Items.Clear();
+                var filteredDbs = dbs.Where(d => !d.StartsWith("pg_") && d != "postgres").OrderBy(d => d).ToArray();
+                clbFinalExportDbs.Items.AddRange(filteredDbs);
+                
+                var defaultDb = cmbFinalExportConnection.SelectedIndex == 0 ? (_newDbConfig?.DatabaseName) : 
+                                cmbFinalExportConnection.SelectedIndex == 1 ? (_oldDbConfig?.DatabaseName) : 
+                                (_customFinalExportConfig?.DatabaseName);
+                if (!string.IsNullOrEmpty(defaultDb))
+                {
+                    int index = clbFinalExportDbs.Items.IndexOf(defaultDb);
+                    if (index >= 0)
+                    {
+                        clbFinalExportDbs.SetItemChecked(index, true);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                txtFinalExportLog.AppendText($"Error loading databases: {ex.Message}\r\n");
+            }
+        }
+
         private async void BtnExportFinal_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
+            var service = GetActiveFinalExportPgService();
+            if (service == null)
+            {
+                MessageBox.Show("Please select a connection first.", "Connection Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var checkedItems = clbFinalExportDbs.CheckedItems;
+            if (checkedItems.Count == 0)
+            {
+                MessageBox.Show("Please select at least one database to export.", "Database Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             try
             {
-                txtFinalExportLog.AppendText($"Starting final export for {OldDbName}...\r\n");
-                var backupPath = _fileSystemService!.GetBackupPath(OldDbName);
-                await _oldPgService!.BackupDatabaseAsync(backupPath);
-                txtFinalExportLog.AppendText($"Backup saved to {backupPath}\r\n");
+                foreach (var item in checkedItems)
+                {
+                    string dbName = item.ToString()!;
+                    txtFinalExportLog.AppendText($"Starting final export for {dbName}...\r\n");
+                    var backupPath = _fileSystemService!.GetBackupPath(dbName);
+                    await service.BackupDatabaseAsync(backupPath);
+                    txtFinalExportLog.AppendText($"Backup saved to {backupPath}\r\n");
 
-                var fullPath = _fileSystemService!.GetFullScriptPath(OldDbName);
-                await _oldPgService!.DumpFullScriptAsync(fullPath);
-                txtFinalExportLog.AppendText($"Full script saved to {fullPath}\r\n");
+                    var fullPath = _fileSystemService!.GetFullScriptPath(dbName);
+                    await service.DumpFullScriptAsync(fullPath);
+                    txtFinalExportLog.AppendText($"Full script saved to {fullPath}\r\n");
+                    txtFinalExportLog.AppendText($"--- Export completed for {dbName} ---\r\n\r\n");
+                }
             }
             catch (Exception ex)
             {
@@ -3213,6 +3630,15 @@ namespace ReleasePrepTool.UI
                     }
 
                 }
+
+                // Check all nodes in structure tree by default
+                tvJunkResults.BeginUpdate();
+                foreach (TreeNode node in tvJunkResults.Nodes)
+                {
+                    node.Checked = true;
+                    SetNodeCheckStateRecursive(node, true);
+                }
+                tvJunkResults.EndUpdate();
                 
                 if (!_lastJunkResults.Any() || !_lastJunkResults.Any(r => r.Items.Any() || r.Errors.Any())) 
                 {
@@ -3287,6 +3713,41 @@ namespace ReleasePrepTool.UI
             finally
             {
                 dgvJunkDataResults.ResumeLayout();
+            }
+        }
+
+        private void DgvJunkDataResults_ColumnHeaderMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.ColumnIndex == dgvJunkDataResults.Columns["Selected"]?.Index)
+            {
+                bool anyUnchecked = false;
+                foreach (DataGridViewRow row in dgvJunkDataResults.Rows)
+                {
+                    if (row.Tag is JunkItem && !(row.Cells["Selected"].Value is bool b && b))
+                    {
+                        anyUnchecked = true;
+                        break;
+                    }
+                }
+
+                bool newCheckState = anyUnchecked;
+
+                dgvJunkDataResults.SuspendLayout();
+                try
+                {
+                    foreach (DataGridViewRow row in dgvJunkDataResults.Rows)
+                    {
+                        if (row.Tag is JunkItem || (row.Tag is string tag && tag.StartsWith("GROUP:")))
+                        {
+                            row.Cells["Selected"].Value = newCheckState;
+                        }
+                    }
+                    dgvJunkDataResults.EndEdit();
+                }
+                finally
+                {
+                    dgvJunkDataResults.ResumeLayout();
+                }
             }
         }
 
@@ -3893,66 +4354,264 @@ namespace ReleasePrepTool.UI
             }
         }
 
+        private void SelectFolder(TextBox txt)
+        {
+            using (var fbd = new FolderBrowserDialog())
+            {
+                if (Directory.Exists(txt.Text))
+                {
+                    fbd.SelectedPath = txt.Text;
+                }
+                if (fbd.ShowDialog() == DialogResult.OK)
+                {
+                    txt.Text = fbd.SelectedPath;
+                }
+            }
+        }
+
         private void BtnCompareConfig_Click(object? sender, EventArgs e)
         {
             if (!EnsureServicesInitialized()) return;
-            if (!File.Exists(txtOldConfigPath.Text) || !File.Exists(txtNewConfigPath.Text)) return;
 
-            try
+            if (rbCompareFolder.Checked)
             {
-                var cmpService = new ConfigCompareService();
-                string diffOutput, cleanContent;
-                bool hasChanges;
-
-                if (txtOldConfigPath.Text.EndsWith(".json"))
+                if (!Directory.Exists(txtOldConfigPath.Text) || !Directory.Exists(txtNewConfigPath.Text))
                 {
-                    diffOutput = cmpService.CompareJsonFiles(txtOldConfigPath.Text, txtNewConfigPath.Text, out hasChanges, out cleanContent);
-                }
-                else
-                {
-                    diffOutput = cmpService.CompareEnvFiles(txtOldConfigPath.Text, txtNewConfigPath.Text, out hasChanges, out cleanContent);
+                    MessageBox.Show("Please select valid source and target configuration folders.", "Invalid Folders", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    UpdateAiReadinessStatus();
+                    return;
                 }
 
-                txtConfigDiffLog.Text = diffOutput;
-
-                if (hasChanges && _fileSystemService != null)
+                try
                 {
-                    var notePath = _fileSystemService.GetNoteFilePath();
-                    var header = $"\r\n=== Changes for {Path.GetFileName(txtNewConfigPath.Text)} ===\r\n";
-                    _fileSystemService.AppendToFile(notePath, header + diffOutput);
-                    
-                    var cleanPath = Path.Combine(_fileSystemService.BaseReleasePath, "source_code", "clean_" + Path.GetFileName(txtNewConfigPath.Text));
-                    _fileSystemService.WriteToFile(cleanPath, cleanContent);
-                    
-                    txtConfigDiffLog.AppendText($"\r\nNote generated at {notePath}\r\nClean config generated at {cleanPath}");
+                    var cmpService = new ConfigCompareService();
+                    string diffOutput = cmpService.CompareDirectories(txtOldConfigPath.Text, txtNewConfigPath.Text, out bool hasChanges, out var cleanFiles);
+
+                    var header = $"\r\n=== Configuration Version {txtReleaseVersion.Text} Update ===\r\n\r\n";
+                    txtConfigDiffLog.Text = hasChanges ? (header + diffOutput) : diffOutput;
+
+                    if (hasChanges && _fileSystemService != null)
+                    {
+                        var notePath = _fileSystemService.GetNoteFilePath();
+                        _fileSystemService.WriteToFile(notePath, header + diffOutput);
+                        
+                        txtConfigDiffLog.AppendText($"\r\nNote generated at {notePath}");
+                    }
+                    else if (!hasChanges)
+                    {
+                        txtConfigDiffLog.Text = "No differences detected between the configuration folders.";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    txtConfigDiffLog.AppendText($"Error: {ex.Message}");
+                }
+                finally
+                {
+                    UpdateAiReadinessStatus();
                 }
             }
-            catch (Exception ex)
+            else
             {
-                txtConfigDiffLog.AppendText($"Error: {ex.Message}");
+                if (!File.Exists(txtOldConfigPath.Text) || !File.Exists(txtNewConfigPath.Text)) { UpdateAiReadinessStatus(); return; }
+
+                try
+                {
+                    var cmpService = new ConfigCompareService();
+                    string diffOutput, cleanContent;
+                    bool hasChanges;
+
+                    if (txtOldConfigPath.Text.EndsWith(".json"))
+                    {
+                        diffOutput = cmpService.CompareJsonFiles(txtOldConfigPath.Text, txtNewConfigPath.Text, out hasChanges, out cleanContent);
+                    }
+                    else
+                    {
+                        diffOutput = cmpService.CompareEnvFiles(txtOldConfigPath.Text, txtNewConfigPath.Text, out hasChanges, out cleanContent);
+                    }
+
+                    var header = $"\r\n=== Changes for {Path.GetFileName(txtNewConfigPath.Text)} ===\r\n\r\n";
+                    txtConfigDiffLog.Text = hasChanges ? (header + diffOutput) : diffOutput;
+
+                    if (hasChanges && _fileSystemService != null)
+                    {
+                        var notePath = _fileSystemService.GetNoteFilePath();
+                        _fileSystemService.WriteToFile(notePath, header + diffOutput);
+                        
+                        txtConfigDiffLog.AppendText($"\r\nNote generated at {notePath}");
+                    }
+                    else if (!hasChanges)
+                    {
+                        txtConfigDiffLog.Text = "No differences detected between the configuration files.";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    txtConfigDiffLog.AppendText($"Error: {ex.Message}");
+                }
+                finally
+                {
+                    UpdateAiReadinessStatus();
+                }
             }
         }
 
         private async void BtnReviewSchema_Click(object? sender, EventArgs e)
         {
+            if (_isAiReviewRunning) return;
             if (!EnsureServicesInitialized() || _fileSystemService == null) return;
+            UpdateAiReadinessStatus();
             var path = _fileSystemService.GetSqlScriptPath(NewDbName, true);
-            if (!File.Exists(path)) { txtAiReviewLog.Text = "Schema script not generated yet."; return; }
+            if (!File.Exists(path))
+            {
+                txtAiReviewLog.Text = "Schema script not generated yet.\r\nPlease generate schema sync script in Tab 3 first.";
+                lblAiReviewStatus.Text = "Blocked: missing schema script";
+                lblAiReviewStatus.ForeColor = Color.DarkRed;
+                return;
+            }
 
-            txtAiReviewLog.Text = "Sending script to AI for review...\r\n";
             if (_aiService == null) return;
-            var result = await _aiService.ReviewSqlScriptAsync(File.ReadAllText(path), $"Release from {OldDbName} to {NewDbName}");
-            txtAiReviewLog.Text = result;
+            try
+            {
+                SetAiReviewUiState(true, "Running schema review...");
+                txtAiReviewLog.Text = "Sending schema script to AI for review...\r\n";
+                var result = await _aiService.ReviewSqlScriptAsync(File.ReadAllText(path), $"Release from {OldDbName} to {NewDbName}");
+                txtAiReviewLog.Text = result;
+                SetAiReviewUiState(false, "Schema review completed");
+            }
+            catch (Exception ex)
+            {
+                txtAiReviewLog.Text = $"AI schema review failed: {ex.Message}";
+                SetAiReviewUiState(false, "Schema review failed", true);
+            }
+        }
+
+        private async void BtnReviewData_Click(object? sender, EventArgs e)
+        {
+            if (_isAiReviewRunning) return;
+            if (!EnsureServicesInitialized() || _fileSystemService == null) return;
+            UpdateAiReadinessStatus();
+            var path = _fileSystemService.GetSqlScriptPath(NewDbName, false);
+            if (!File.Exists(path))
+            {
+                txtAiReviewLog.Text = "Data sync script not generated yet.\r\nPlease generate data sync script in Tab 4 first.";
+                lblAiReviewStatus.Text = "Blocked: missing data script";
+                lblAiReviewStatus.ForeColor = Color.DarkRed;
+                return;
+            }
+
+            if (_aiService == null) return;
+            try
+            {
+                SetAiReviewUiState(true, "Running data review...");
+                txtAiReviewLog.Text = "Sending data sync script to AI for review...\r\n";
+                var result = await _aiService.ReviewDataChangesAsync(File.ReadAllText(path), $"Release from {OldDbName} to {NewDbName}");
+                txtAiReviewLog.Text = result;
+                SetAiReviewUiState(false, "Data review completed");
+            }
+            catch (Exception ex)
+            {
+                txtAiReviewLog.Text = $"AI data review failed: {ex.Message}";
+                SetAiReviewUiState(false, "Data review failed", true);
+            }
         }
 
         private async void BtnReviewConfig_Click(object? sender, EventArgs e)
         {
+            if (_isAiReviewRunning) return;
             if (!EnsureServicesInitialized() || _aiService == null) return;
-            if (string.IsNullOrEmpty(txtConfigDiffLog.Text)) { txtAiReviewLog.Text = "Please compare config first."; return; }
+            UpdateAiReadinessStatus();
+            if (string.IsNullOrWhiteSpace(txtConfigDiffLog.Text))
+            {
+                txtAiReviewLog.Text = "Config diff is empty.\r\nPlease run config compare in Tab 8 first.";
+                lblAiReviewStatus.Text = "Blocked: missing config diff";
+                lblAiReviewStatus.ForeColor = Color.DarkRed;
+                return;
+            }
             
-            txtAiReviewLog.Text = "Sending config diff to AI for review...\r\n";
-            var result = await _aiService.ReviewConfigChangesAsync(txtConfigDiffLog.Text);
-            txtAiReviewLog.Text = result;
+            try
+            {
+                SetAiReviewUiState(true, "Running config audit...");
+                txtAiReviewLog.Text = "Sending configuration diff to AI for review...\r\n";
+                var result = await _aiService.ReviewConfigChangesAsync(txtConfigDiffLog.Text);
+                txtAiReviewLog.Text = result;
+                SetAiReviewUiState(false, "Config audit completed");
+            }
+            catch (Exception ex)
+            {
+                txtAiReviewLog.Text = $"AI config audit failed: {ex.Message}";
+                SetAiReviewUiState(false, "Config audit failed", true);
+            }
+        }
+
+        private void UpdateAiReadinessStatus()
+        {
+            if (lblAiKeyReadiness == null || lblAiSchemaReadiness == null || lblAiDataReadiness == null || lblAiConfigReadiness == null)
+                return;
+
+            var hasAiKey = !string.IsNullOrWhiteSpace(txtAiKey?.Text);
+            SetReadinessLabel(lblAiKeyReadiness, "AI Key", hasAiKey ? "Configured" : "Missing", hasAiKey);
+
+            var hasSchemaScript = false;
+            var hasDataScript = false;
+            if (_fileSystemService != null)
+            {
+                try
+                {
+                    var schemaScriptPath = _fileSystemService.GetSqlScriptPath(NewDbName, true);
+                    hasSchemaScript = File.Exists(schemaScriptPath);
+                    var dataScriptPath = _fileSystemService.GetSqlScriptPath(NewDbName, false);
+                    hasDataScript = File.Exists(dataScriptPath);
+                }
+                catch
+                {
+                    hasSchemaScript = false;
+                    hasDataScript = false;
+                }
+            }
+            SetReadinessLabel(lblAiSchemaReadiness, "Schema Script", hasSchemaScript ? "Ready" : "Missing", hasSchemaScript);
+            SetReadinessLabel(lblAiDataReadiness, "Data Script", hasDataScript ? "Ready" : "Missing", hasDataScript);
+
+            var configDiff = txtConfigDiffLog?.Text ?? "";
+            if (string.IsNullOrWhiteSpace(configDiff) && _fileSystemService != null)
+            {
+                try
+                {
+                    var notePath = _fileSystemService.GetNoteFilePath();
+                    if (File.Exists(notePath))
+                    {
+                        configDiff = File.ReadAllText(notePath);
+                        if (txtConfigDiffLog != null)
+                        {
+                            txtConfigDiffLog.Text = configDiff;
+                        }
+                    }
+                }
+                catch { }
+            }
+            var hasConfigDiff = !string.IsNullOrWhiteSpace(configDiff) && !configDiff.TrimStart().StartsWith("Error:", StringComparison.OrdinalIgnoreCase);
+            SetReadinessLabel(lblAiConfigReadiness, "Config Diff", hasConfigDiff ? "Ready" : "Missing", hasConfigDiff);
+        }
+
+        private void SetReadinessLabel(Label label, string name, string value, bool isReady)
+        {
+            label.Text = $"{name}: {value}";
+            label.ForeColor = isReady ? Color.DarkGreen : Color.DarkOrange;
+        }
+
+        private void SetAiReviewUiState(bool running, string status, bool isError = false)
+        {
+            _isAiReviewRunning = running;
+            btnReviewSchema.Enabled = !running;
+            btnReviewData.Enabled = !running;
+            btnReviewConfig.Enabled = !running;
+
+            btnReviewSchema.Text = running ? "⏳ Reviewing..." : "\u2728  Review Schema Changes";
+            btnReviewData.Text = running ? "⏳ Reviewing..." : "\u2728  Review Data Changes";
+            btnReviewConfig.Text = running ? "⏳ Auditing..." : "\u2728  Audit Configuration Diff";
+
+            lblAiReviewStatus.Text = status;
+            lblAiReviewStatus.ForeColor = isError ? Color.DarkRed : (running ? Color.DarkOrange : Color.DarkGreen);
         }
         private List<string> GetCheckedTables()
         {
@@ -3972,8 +4631,9 @@ namespace ReleasePrepTool.UI
             }
             return selectedTables;
         }
-        private void AddStatusBadge(string text, Color color, Action? onClick = null)
+        private void AddStatusBadge(string text, Color color, Action? onClick = null, FlowLayoutPanel? targetPanel = null)
         {
+            var panel = targetPanel ?? pnlStatusLabels;
             var isHovered = false;
             var lbl = new Label
             {
@@ -4031,7 +4691,7 @@ namespace ReleasePrepTool.UI
                 TextRenderer.DrawText(g, lbl.Text, lbl.Font, lbl.ClientRectangle, lbl.ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             };
 
-            pnlStatusLabels.Controls.Add(lbl);
+            panel.Controls.Add(lbl);
         }
 
         private void HighlightSqlKeywords(RichTextBox rtb)
