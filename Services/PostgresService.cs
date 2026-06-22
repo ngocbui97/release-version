@@ -681,20 +681,96 @@ public class PostgresService
         }
     }
 
-    public virtual async Task RestoreDatabaseAsync(string fileType, string backupPath, string? targetDbName = null, Action<string>? onOutput = null)
+    public virtual async Task RestoreDatabaseAsync(string fileType, string backupPath, string? targetDbName = null, RestoreOptions? options = null, Action<string>? onOutput = null, CancellationToken cancellationToken = default)
     {
         var db = string.IsNullOrWhiteSpace(targetDbName) ? _config.DatabaseName : targetDbName;
         if (!string.IsNullOrWhiteSpace(targetDbName)) await CreateDatabaseIfNotExistsAsync(targetDbName);
 
-        if (fileType == ".sql")
-            await RunPostgresToolAsync("psql", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {db} -f \"{backupPath}\"", onOutput);
+        var opt = options ?? new RestoreOptions();
+
+        if (opt.ExtensionsToInstall != null && opt.ExtensionsToInstall.Count > 0)
+        {
+            var connStr = $"Host={_config.Host};Port={_config.Port};Username={_config.Username};Password={_config.Password};Database={db}";
+            onOutput?.Invoke($"[INFO] Installing {opt.ExtensionsToInstall.Count} required extension(s) in database '{db}'...");
+            try
+            {
+                await using var conn = new Npgsql.NpgsqlConnection(connStr);
+                await conn.OpenAsync(cancellationToken);
+                foreach (var ext in opt.ExtensionsToInstall)
+                {
+                    onOutput?.Invoke($"[INFO] Executing: CREATE EXTENSION IF NOT EXISTS \"{ext}\";");
+                    try
+                    {
+                        await using var cmd = new Npgsql.NpgsqlCommand($"CREATE EXTENSION IF NOT EXISTS \"{ext}\";", conn);
+                        await cmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        onOutput?.Invoke($"[WARNING] Failed to create extension '{ext}': {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                onOutput?.Invoke($"[WARNING] Failed to connect to database '{db}' to install extensions: {ex.Message}");
+            }
+        }
+
+        if (fileType == ".sql" || opt.Format == "Plain")
+        {
+            var sqlArgs = $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {db}";
+            if (opt.SingleTransaction) sqlArgs += " --single-transaction";
+            if (opt.ExitOnError) sqlArgs += " -v ON_ERROR_STOP=1";
+            sqlArgs += $" -f \"{backupPath}\"";
+            await RunPostgresToolAsync("psql", sqlArgs, onOutput, cancellationToken);
+        }
         else
-            await RunPostgresToolAsync("pg_restore", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {db} --clean --if-exists -1 --verbose \"{backupPath}\"", onOutput);
+        {
+            var restoreArgs = $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {db}";
+            
+            if (opt.Format == "Custom") restoreArgs += " -F c";
+            else if (opt.Format == "Tar") restoreArgs += " -F t";
+            else if (opt.Format == "Directory") restoreArgs += " -F d";
+
+            if (!string.IsNullOrWhiteSpace(opt.RoleName)) restoreArgs += $" --role=\"{opt.RoleName}\"";
+            
+            if (opt.Section == "Pre-data") restoreArgs += " --section=pre-data";
+            else if (opt.Section == "Post-data") restoreArgs += " --section=post-data";
+            else if (opt.Section == "Data") restoreArgs += " --section=data";
+
+            if (opt.IncludeCreateDb) restoreArgs += " --create";
+            if (opt.CleanBeforeRestore)
+            {
+                restoreArgs += " --clean";
+                if (opt.IncludeIfExists) restoreArgs += " --if-exists";
+            }
+            if (opt.SingleTransaction) restoreArgs += " -1";
+            if (opt.OnlyData) restoreArgs += " --data-only";
+            if (opt.OnlySchema) restoreArgs += " --schema-only";
+            if (opt.NoOwner) restoreArgs += " --no-owner";
+            if (opt.NoPrivileges) restoreArgs += " --no-privileges";
+            if (opt.NoTablespaces) restoreArgs += " --no-tablespaces";
+            if (opt.DisableTriggers) restoreArgs += " --disable-triggers";
+            if (opt.NoDataFailedTables) restoreArgs += " --no-data-for-failed-tables";
+            if (opt.ExitOnError) restoreArgs += " --exit-on-error";
+            if (opt.UseSetSessionAuth) restoreArgs += " --use-set-session-authorization";
+            if (opt.Verbose) restoreArgs += " --verbose";
+            if (opt.NumberOfJobs > 1) restoreArgs += $" -j {opt.NumberOfJobs}";
+            restoreArgs += $" \"{backupPath}\"";
+            
+            onOutput?.Invoke($"[CMD] pg_restore {restoreArgs}");
+            await RunPostgresToolAsync("pg_restore", restoreArgs, onOutput, cancellationToken);
+        }
     }
 
     public virtual async Task ExecuteScriptFileAsync(string scriptPath)
     {
         await RunPostgresToolAsync("psql", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {_config.DatabaseName} -f \"{scriptPath}\" -v ON_ERROR_STOP=1 --single-transaction");
+    }
+
+    public virtual async Task ExecuteScriptFileAsync(string dbName, string scriptPath, Action<string>? onOutput = null, CancellationToken cancellationToken = default)
+    {
+        await RunPostgresToolAsync("psql", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {dbName} -f \"{scriptPath}\" -v ON_ERROR_STOP=1", onOutput, cancellationToken);
     }
 
     public virtual async Task ExecuteSqlWithTransactionAsync(string sql)
@@ -1011,7 +1087,170 @@ public class PostgresService
         return pkValues;
     }
 
-    private async Task RunPostgresToolAsync(string toolName, string arguments, Action<string>? onOutput = null)
+    public virtual async Task<List<string>> GetRequiredExtensionsAsync(string fileType, string backupPath)
+    {
+        var extensions = new List<string>();
+
+        var extensionPatterns = new Dictionary<string, string>
+        {
+            { "uuid-ossp", @"\buuid_generate_v[1-5]\b|\buuid_nil\b|\buuid_ns_dns\b|\buuid_ns_url\b|\buuid_ns_oid\b|\buuid_ns_x500\b" },
+            { "pgcrypto", @"\bgen_salt\b|\bpgp_sym_(en|de)crypt\b|\bpgp_pub_(en|de)crypt\b|\bcrypt\b|\bdigest\b|\bhmac\b" },
+            { "postgis", @"\bgeometry\b|\bgeography\b|\bst_[a-zA-Z0-9_]+" },
+            { "hstore", @"\bhstore\b" },
+            { "unaccent", @"\bunaccent\b" },
+            { "citext", @"\bcitext\b" },
+            { "pg_trgm", @"\bsimilarity\b|\bword_similarity\b|\bshow_trgm\b" },
+            { "fuzzystrmatch", @"\blevenshtein\b|\bsoundex\b|\bmetaphone\b" },
+            { "ltree", @"\bltree\b|\blquery\b|\bltxtquery\b" },
+            { "cube", @"\bcube\b|\bcube_dim\b|\bcube_ll_ur\b" },
+            { "earthdistance", @"\bll_to_earth\b|\bearth_distance\b|\bearth_box\b" },
+            { "isn", @"\bisbn\b|\bissn\b|\bupc\b|\bean13\b" },
+            { "lo", @"\blo_manage\b|\blo_oid\b" },
+            { "tablefunc", @"\bcrosstab\b|\bcrosstab[2-4]\b|\bconnectby\b" },
+            { "intarray", @"\bicount\b|\buniq\b|\bsubarray\b" },
+            { "pg_visibility", @"\bpg_visibility\b|\bpg_visibility_map\b" },
+            { "pgrowlocks", @"\bpgrowlocks\b" },
+            { "pg_buffercache", @"\bpg_buffercache_pages\b" },
+            { "pg_stat_statements", @"\bpg_stat_statements_reset\b|\bpg_stat_statements\b" },
+            { "dblink", @"\bdblink_connect\b|\bdblink_exec\b" },
+            { "amcheck", @"\bbt_index_check\b|\bbt_index_parent_check\b" },
+            { "pageinspect", @"\bget_raw_page\b|\bheap_page_items\b" },
+            { "xml2", @"\bxml_valid\b|\bxpath_string\b|\bxslt_process\b" },
+            { "bloom", @"\busing\s+bloom\b" },
+            { "semver", @"\bsemver\b" },
+            { "adminpack", @"\bpg_file_write\b|\bpg_file_rename\b|\bpg_logdir_ls\b" },
+            { "file_fdw", @"\bfile_fdw_handler\b|\bfile_fdw_validator\b" },
+            { "postgres_fdw", @"\bpostgres_fdw_handler\b|\bpostgres_fdw_validator\b" },
+            { "tsm_system_rows", @"\btsm_system_rows_handler\b" },
+            { "tsm_system_time", @"\btsm_system_time_handler\b" },
+            { "pg_prewarm", @"\bpg_prewarm\b" },
+            { "hll", @"\bhll\b" },
+            { "pgvector", @"\bvector\b|\bcosine_distance\b|\bl2_distance\b|\binner_product\b" },
+            { "timescaledb", @"\bcreate_hypertable\b|\btime_bucket\b|\btime_bucket_gapfill\b" },
+            { "pg_partman", @"\bcreate_parent\b|\brun_maintenance\b|\bpartman\b" },
+            { "pg_cron", @"\bcron\.schedule\b|\bcron\.unschedule\b|\bcron\.job\b" },
+            { "prefix", @"\bprefix_range\b|\bprefix_gist\b" },
+            { "ip4r", @"\bip4\b|\bip6\b|\bip4r\b|\bip6r\b" },
+            { "pgjwt", @"\bjwt\.sign\b|\bjwt\.verify\b" },
+            { "plv8", @"\blanguage\s+plv8\b|\bplv8_\b" },
+            { "chkpass", @"\bchkpass\b" },
+            { "pg_dirtyread", @"\bpg_dirtyread\b" },
+            { "pg_repack", @"\bpg_repack\b" },
+            { "pg_stat_kcache", @"\bpg_stat_kcache\b" },
+            { "pg_wait_sampling", @"\bpg_wait_sampling\b" },
+            { "pg_hint_plan", @"\bpg_hint_plan\b" },
+            { "pgaudit", @"\bpgaudit\b" },
+            { "orafce", @"\bdbms_output\b|\badd_months\b|\blast_day\b" },
+            { "tcn", @"\btriggered_change_notification\b" },
+            { "pglogical", @"\bpglogical_node\b|\bpglogical_sub\b" },
+            { "tds_fdw", @"\btds_fdw_handler\b" },
+            { "mysql_fdw", @"\bmysql_fdw_handler\b" },
+            { "oracle_fdw", @"\boracle_fdw_handler\b" },
+            { "sqlite_fdw", @"\bsqlite_fdw_handler\b" }
+        };
+
+        var regexes = new Dictionary<string, System.Text.RegularExpressions.Regex>();
+        foreach (var kvp in extensionPatterns)
+        {
+            regexes[kvp.Key] = new System.Text.RegularExpressions.Regex(kvp.Value, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        var createExtensionRegex = new System.Text.RegularExpressions.Regex(
+            @"create\s+extension\s+(?:if\s+not\s+exists\s+)?[""']?([a-zA-Z0-9_\-]+)[""']?", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        );
+
+        if (fileType == ".sql" || fileType == ".txt")
+        {
+            try
+            {
+                using var reader = new StreamReader(backupPath);
+                string? line;
+                int lineCount = 0;
+                while ((line = await reader.ReadLineAsync()) != null && lineCount < 20000)
+                {
+                    lineCount++;
+                    // 1. Check CREATE EXTENSION
+                    var match = createExtensionRegex.Match(line);
+                    if (match.Success)
+                    {
+                        var ext = match.Groups[1].Value.Trim().ToLower();
+                        if (!extensions.Contains(ext))
+                        {
+                            extensions.Add(ext);
+                        }
+                    }
+
+                    // 2. Check keyword signatures
+                    foreach (var kvp in regexes)
+                    {
+                        if (kvp.Value.IsMatch(line))
+                        {
+                            if (!extensions.Contains(kvp.Key))
+                            {
+                                extensions.Add(kvp.Key);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error scanning SQL for extensions: {ex.Message}");
+            }
+        }
+        else
+        {
+            try
+            {
+                string exe = string.IsNullOrEmpty(PostgresBinPath) ? "pg_restore" : Path.Combine(PostgresBinPath, "pg_restore");
+                if (Environment.OSVersion.Platform == PlatformID.Win32NT && string.IsNullOrEmpty(PostgresBinPath)) exe += ".exe";
+                
+                var psi = new ProcessStartInfo { FileName = exe, Arguments = $"-s -f - \"{backupPath}\"", RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+                psi.EnvironmentVariables["PGPASSWORD"] = _config.Password;
+                
+                using var process = new Process { StartInfo = psi };
+                process.Start();
+                
+                using var streamReader = process.StandardOutput;
+                string? line;
+                while ((line = await streamReader.ReadLineAsync()) != null)
+                {
+                    // 1. Check CREATE EXTENSION in line
+                    var extMatch = createExtensionRegex.Match(line);
+                    if (extMatch.Success)
+                    {
+                        var ext = extMatch.Groups[1].Value.Trim().ToLower();
+                        if (!extensions.Contains(ext))
+                        {
+                            extensions.Add(ext);
+                        }
+                    }
+
+                    // 2. Check signatures in line
+                    foreach (var kvp in regexes)
+                    {
+                        if (kvp.Value.IsMatch(line))
+                        {
+                            if (!extensions.Contains(kvp.Key))
+                            {
+                                extensions.Add(kvp.Key);
+                            }
+                        }
+                    }
+                }
+                await process.WaitForExitAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error running pg_restore -s: {ex.Message}");
+            }
+        }
+
+        return extensions;
+    }
+
+    private async Task RunPostgresToolAsync(string toolName, string arguments, Action<string>? onOutput = null, CancellationToken cancellationToken = default)
     {
         string exe = string.IsNullOrEmpty(PostgresBinPath) ? toolName : Path.Combine(PostgresBinPath, toolName);
         if (Environment.OSVersion.Platform == PlatformID.Win32NT && string.IsNullOrEmpty(PostgresBinPath)) exe += ".exe";
@@ -1028,9 +1267,25 @@ public class PostgresService
             process.BeginErrorReadLine();
         }
         else process.Start();
-        string stdOut = onOutput != null ? "" : await process.StandardOutput.ReadToEndAsync();
-        string stdErr = onOutput != null ? "" : await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        
+        string stdOut = "";
+        string stdErr = "";
+
+        using (cancellationToken.Register(() => { try { process.Kill(true); } catch {} }))
+        {
+            if (onOutput == null)
+            {
+                stdOut = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+                stdErr = await process.StandardError.ReadToEndAsync(cancellationToken);
+            }
+            await process.WaitForExitAsync(cancellationToken);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("Operation was cancelled by user.");
+        }
+
         if (process.ExitCode != 0) throw new Exception($"Error running {toolName}: {(onOutput != null ? errorSb.ToString() : stdErr)}\n{stdOut}");
     }
 }

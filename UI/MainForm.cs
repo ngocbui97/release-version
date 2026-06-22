@@ -19,6 +19,7 @@ namespace ReleasePrepTool.UI
         
         // Tab 1: Configuration & Setup
         private TextBox txtProductName = null!, txtPgBinPath = null!, txtAiKey = null!, txtReleaseVersion = null!, txtReleasePath = null!;
+        private ComboBox cmbAiProvider = null!, cmbAiModel = null!;
         private Label lblOldDbStatus = null!, lblNewDbStatus = null!;
         private Label lblSourceSchemaHeader = null!, lblTargetSchemaHeader = null!;
         private GroupBox gbSourceData = null!, gbTargetData = null!;
@@ -28,6 +29,18 @@ namespace ReleasePrepTool.UI
         // Tab 2: Databases Backup
         private Button btnBackupOld = null!;
         private ComboBox cmbRestoreConnection = null!;
+        private ListBox lstPostRestoreSqls = null!;
+        private List<string> _postRestoreSqlFiles = new List<string>();
+        private readonly Dictionary<string, string> _sqlFileStatuses = new Dictionary<string, string>();
+        private CheckBox chkCleanBefore = null!, chkSingleTransaction = null!, chkOnlySchema = null!, chkOnlyData = null!;
+        private CheckBox chkNoOwner = null!, chkNoPrivileges = null!, chkDisableTriggers = null!, chkNoTablespaces = null!;
+        private CheckBox chkVerboseRestore = null!;
+        private NumericUpDown numRestoreJobs = null!;
+        private TextBox txtRoleName = null!;
+        private ComboBox cmbRestoreFormat = null!, cmbRestoreSection = null!;
+        private CheckBox chkIncludeCreateDb = null!, chkNoDataFailedTables = null!, chkExitOnError = null!, chkUseSetSessionAuth = null!;
+        private FlowLayoutPanel pnlExtensions = null!;
+        private Panel txtRestoreFilePath = null!;
 
         // Tab 3: Compare DB
         private SplitContainer splitCompare = null!;
@@ -45,6 +58,9 @@ namespace ReleasePrepTool.UI
         // Tab 4: Sync & Execute DB
         private Button btnExecuteSchema = null!, btnExecuteData = null!;
         private TextBox txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!;
+        private readonly List<string> _restoreLogLines = new List<string>();
+        private TextBox txtLogFilter = null!;
+        private ComboBox cmbLogFilterType = null!;
         private FlowLayoutPanel pnlStatusLabels = null!, pnlDataStatusLabels = null!, pnlTreeToolbar = null!;
         private RichTextBox txtSourceDdl = null!, txtTargetDdl = null!, txtSourceLineNumbers = null!, txtTargetLineNumbers = null!;
         private TextBox txtIgnoreColumns = null!, txtDataFilter = null!;
@@ -59,6 +75,7 @@ namespace ReleasePrepTool.UI
         // Tab 6: Compare Config
         private TextBox txtOldConfigPath = null!, txtNewConfigPath = null!;
         private Button btnSelectOldConfig = null!, btnSelectNewConfig = null!, btnCompareConfig = null!;    
+        private CheckBox chkTuningSchema = null!, chkTuningData = null!, chkIncludeOwner = null!;
         private RadioButton rbCompareFile = null!, rbCompareFolder = null!;
 
         // Tab 7: Final Export + Tab 8: AI Review
@@ -82,6 +99,42 @@ namespace ReleasePrepTool.UI
         private ComboBox cmbFinalExportConnection = null!;
         private CheckedListBox clbFinalExportDbs = null!;
         private string? _lastSchemaExportPath, _lastDataExportPath;
+        private bool _isUpdatingRestoreConnection = false;
+        private System.Threading.CancellationTokenSource? _restoreCts;
+
+        private static readonly System.Text.RegularExpressions.Regex PsqlNoiseRegex = new System.Text.RegularExpressions.Regex(
+            @"^(BEGIN|COMMIT|ROLLBACK|SET|GRANT|REVOKE|ANALYZE|VACUUM|INSERT \d+ \d+|UPDATE \d+|DELETE \d+|SELECT \d+|COPY \d+|COMMENT|DO|(CREATE|ALTER|DROP) [A-Z ]+)$",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        private static readonly System.Text.RegularExpressions.Regex PsqlPathCleanupRegex = new System.Text.RegularExpressions.Regex(
+            @"^psql:.+?:(\d+):\s*(NOTICE|ERROR|WARNING|INFO|CONTEXT):\s*(.*)$",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        private static readonly System.Text.RegularExpressions.Regex PsqlFallbackCleanupRegex = new System.Text.RegularExpressions.Regex(
+            @"^psql:.+?:(\d+):\s*(.*)$",
+            System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        // Tab 10: Other (Script Converter)
+        private TextBox txtConvertSourceFile = null!;
+        private Button btnBrowseConvertFile = null!;
+        private Button btnAnalyzeScript = null!;
+        private Button btnReviewScript = null!;
+        private Button btnConvertScript = null!;
+        private TextBox txtConvertLog = null!;
+        private CheckBox chkConvertTuning = null!;
+        private CheckBox chkIgnoreOwner = null!;
+        private CheckBox chkIgnorePrivileges = null!;
+        private CheckBox chkIgnoreTablespaces = null!;
+        private CheckBox chkIgnoreComments = null!;
+        private CheckBox chkIgnorePublications = null!;
+        private CheckBox chkIgnoreSubscriptions = null!;
+        private CheckBox chkIgnoreSecurityLabels = null!;
+        private CheckBox chkIgnoreTableAccessMethods = null!;
+        private CheckBox chkIgnoreData = null!;
+        private CheckBox chkIgnoreSchema = null!;
+        private CheckBox chkIgnoreTransaction = null!;
+        private Button btnOpenConvertFolder = null!;
+        private string? _lastConvertedScriptPath;
 
         // Services
         private PostgresService? _oldPgService;
@@ -163,6 +216,54 @@ namespace ReleasePrepTool.UI
             UpdateStatusBadge(lblOldDbStatus, _oldDbConfig?.IsValid, _oldDbConfig != null ? $"{_oldDbConfig.Host}:{_oldDbConfig.Port} (DB: {_oldDbConfig.DatabaseName})" : "Not Configured");
             UpdateStatusBadge(lblNewDbStatus, _newDbConfig?.IsValid, _newDbConfig != null ? $"{_newDbConfig.Host}:{_newDbConfig.Port} (DB: {_newDbConfig.DatabaseName})" : "Not Configured");
             UpdateTabContextHeaders();
+            UpdateRestoreConnectionItems();
+        }
+
+        private void UpdateRestoreConnectionItems()
+        {
+            if (cmbRestoreConnection == null) return;
+
+            _isUpdatingRestoreConnection = true;
+            try
+            {
+                var selectedIndex = cmbRestoreConnection.SelectedIndex;
+                cmbRestoreConnection.BeginUpdate();
+                cmbRestoreConnection.Items.Clear();
+
+                string sourceText = "Source (Dev)";
+                if (_newDbConfig != null)
+                {
+                    sourceText += $" ({_newDbConfig.Host}:{_newDbConfig.Port})";
+                }
+
+                string targetText = "Target (Prod)";
+                if (_oldDbConfig != null)
+                {
+                    targetText += $" ({_oldDbConfig.Host}:{_oldDbConfig.Port})";
+                }
+
+                string customText = "Custom Connection...";
+                if (_customRestoreConfig != null)
+                {
+                    customText += $" ({_customRestoreConfig.Host}:{_customRestoreConfig.Port})";
+                }
+
+                cmbRestoreConnection.Items.AddRange(new string[] { sourceText, targetText, customText });
+
+                if (selectedIndex >= 0 && selectedIndex < cmbRestoreConnection.Items.Count)
+                {
+                    cmbRestoreConnection.SelectedIndex = selectedIndex;
+                }
+                else
+                {
+                    cmbRestoreConnection.SelectedIndex = 0;
+                }
+                cmbRestoreConnection.EndUpdate();
+            }
+            finally
+            {
+                _isUpdatingRestoreConnection = false;
+            }
         }
 
         private void UpdateTabContextHeaders()
@@ -285,6 +386,112 @@ namespace ReleasePrepTool.UI
             return txt;
         }
 
+        private ComboBox AddSettingComboRow(TableLayoutPanel grid, string label, string[] items, int selectedIndex = 0, bool isEditable = false)
+        {
+            var rowIndex = grid.RowCount++;
+            grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            
+            var lbl = new Label { Text = label, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary };
+            var cmb = new ComboBox { 
+                Dock = DockStyle.Top, 
+                Margin = new Padding(10, 8, 10, 0), 
+                DropDownStyle = isEditable ? ComboBoxStyle.DropDown : ComboBoxStyle.DropDownList, 
+                Font = new Font(UIConstants.MainFontName, 9.5f) 
+            };
+            cmb.Items.AddRange(items);
+            if (items.Length > 0) cmb.SelectedIndex = selectedIndex;
+            
+            grid.Controls.Add(lbl, 0, rowIndex);
+            grid.Controls.Add(cmb, 1, rowIndex);
+            
+            return cmb;
+        }
+
+        private async Task RefreshModelQuotaStatusAsync()
+        {
+            if (cmbAiProvider == null || cmbAiModel == null || txtAiKey == null) return;
+            var provider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini";
+            var apiKey = txtAiKey.Text;
+
+            string[] models;
+            if (provider == "Gemini")
+                models = new string[] { "gemini-3.5-flash", "gemini-3.5-pro", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-thinking-exp", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-8b" };
+            else if (provider == "OpenAI")
+                models = new string[] { "gpt-4o", "gpt-4o-mini", "gpt-4" };
+            else if (provider == "Claude")
+                models = new string[] { "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest" };
+            else if (provider == "Github Copilot")
+                models = new string[] { "gpt-4o", "claude-3.5-sonnet" };
+            else if (provider == "OpenRouter")
+                models = new string[] { 
+                    "google/gemini-2.5-flash", 
+                    "google/gemini-2.5-pro", 
+                    "google/gemini-2.0-flash-thinking-exp:free",
+                    "anthropic/claude-3.5-sonnet", 
+                    "anthropic/claude-3.5-haiku",
+                    "openai/gpt-4o", 
+                    "openai/gpt-4o-mini",
+                    "deepseek/deepseek-chat", 
+                    "deepseek/deepseek-coder",
+                    "meta-llama/llama-3.1-70b-instruct",
+                    "meta-llama/llama-3.1-405b-instruct",
+                    "qwen/qwen-2.5-coder-32b-instruct"
+                };
+            else
+                models = new string[] { };
+
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                cmbAiModel.BeginUpdate();
+                cmbAiModel.Items.Clear();
+                cmbAiModel.Items.AddRange(models);
+                if (cmbAiModel.Items.Count > 0) cmbAiModel.SelectedIndex = 0;
+                cmbAiModel.EndUpdate();
+                return;
+            }
+
+            var currentSelectedModel = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "" : cmbAiModel.Text.Split(' ')[0];
+            
+            cmbAiModel.BeginUpdate();
+            cmbAiModel.Items.Clear();
+            foreach (var m in models)
+            {
+                cmbAiModel.Items.Add($"{m} (Checking...)");
+            }
+            int selectIdx = -1;
+            for (int i = 0; i < models.Length; i++)
+            {
+                if (models[i] == currentSelectedModel) selectIdx = i;
+            }
+            if (selectIdx >= 0) cmbAiModel.SelectedIndex = selectIdx;
+            else if (cmbAiModel.Items.Count > 0) cmbAiModel.SelectedIndex = 0;
+            cmbAiModel.EndUpdate();
+
+            // Run checks sequentially in a single background thread with a delay to avoid rate limiting / concurrency limits
+            _ = Task.Run(async () => {
+                for (int i = 0; i < models.Length; i++)
+                {
+                    var model = models[i];
+                    var index = i;
+                    var status = await AIOperationService.GetModelStatusAsync(provider, apiKey, model);
+                    if (this.IsDisposed) return;
+                    this.BeginInvoke(new Action(() => {
+                        if (this.IsDisposed) return;
+                        if (cmbAiProvider.SelectedItem?.ToString() == provider && txtAiKey.Text == apiKey && cmbAiModel.Items.Count > index)
+                        {
+                            var isSelected = (cmbAiModel.SelectedIndex == index);
+                            cmbAiModel.Items[index] = $"{model} ({status})";
+                            if (isSelected)
+                            {
+                                cmbAiModel.SelectedIndex = index;
+                            }
+                        }
+                    }));
+                    await Task.Delay(250); // 250ms delay between checks to avoid free-tier concurrency limits
+                }
+            });
+        }
+
         private void SetupUI()
         {
             tabControl.TabPages.Clear(); // Remove any legacy tabs from the designer
@@ -379,14 +586,14 @@ namespace ReleasePrepTool.UI
             panelConfig.Controls.Add(cardTarget);
 
             // --- GENERAL SETTINGS CARD ---
-            // Height: 46(offset) + 5×42(rows) + 15(padding bottom) = 271px
-            var cardSettings = CreateCardPanel("GENERAL PROJECT SETTINGS", 750, 271);
+            // Height: 46(offset) + 7×42(rows) + 15(padding bottom) = 355px
+            var cardSettings = CreateCardPanel("GENERAL PROJECT SETTINGS", 750, 355);
             cardSettings.Margin = new Padding(0, 8, 0, 0);
 
             var pnlSettingsGrid = new TableLayoutPanel {
                 Location = new Point(0, 46),   // Padding.Top(18) + title(26) + 2px gap
                 Width = 720,
-                Height = 210,                   // exactly 5 rows × 42px
+                Height = 294,                   // exactly 7 rows × 42px
                 Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 ColumnCount = 3,
                 Padding = new Padding(0, 2, 0, 0)
@@ -399,8 +606,27 @@ namespace ReleasePrepTool.UI
             txtProductName   = AddSettingRow(pnlSettingsGrid, "Product Name:", "ucrm");
             txtReleaseVersion = AddSettingRow(pnlSettingsGrid, "Release Version:", "4.0.3");
             txtReleasePath   = AddSettingRow(pnlSettingsGrid, "Release Output Path:", @"C:\PROJECT_LCM\output", true);
+            
+            cmbAiProvider    = AddSettingComboRow(pnlSettingsGrid, "AI Provider:", new string[] { "Gemini", "OpenAI", "Claude", "Github Copilot", "OpenRouter" });
+            cmbAiModel       = AddSettingComboRow(pnlSettingsGrid, "AI Model:", new string[] { "gemini-3.5-flash", "gemini-3.5-pro", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "gemini-2.0-flash", "gemini-2.0-flash-thinking-exp", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-8b" }, 0, true);
             txtAiKey         = AddSettingRow(pnlSettingsGrid, "AI API Key (optional):", "", false, true);
-            txtAiKey.TextChanged += (s, e) => UpdateAiReadinessStatus();
+
+            cmbAiProvider.SelectedIndexChanged += async (s, e) => {
+                await RefreshModelQuotaStatusAsync();
+                UpdateAiReadinessStatus();
+            };
+
+            System.Windows.Forms.Timer debounceTimer = new System.Windows.Forms.Timer();
+            debounceTimer.Interval = 1000;
+            debounceTimer.Tick += async (s, e) => {
+                debounceTimer.Stop();
+                await RefreshModelQuotaStatusAsync();
+            };
+            txtAiKey.TextChanged += (s, e) => {
+                debounceTimer.Stop();
+                debounceTimer.Start();
+                UpdateAiReadinessStatus();
+            };
 
             cardSettings.Controls.Add(pnlSettingsGrid);
             panelConfig.Controls.Add(cardSettings);
@@ -426,17 +652,25 @@ namespace ReleasePrepTool.UI
                 e.Graphics.DrawLine(pen, 0, 0, pnlFooter.Width, 0);
             };
 
-            // TableLayoutPanel: Col 0 = stretch filler | Col 1 = Open Output | Col 2 = Initialize
+            // TableLayoutPanel: Col 0 = stretch filler | Col 1 = Save Settings | Col 2 = Open Output | Col 3 = Initialize
             // This guarantees Initialize Session is ALWAYS on the far right.
             var tblFooter = new TableLayoutPanel {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 4,
                 RowCount = 1
             };
             tblFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); // filler
+            tblFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160)); // Save Settings
             tblFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160)); // Open Output
             tblFooter.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260)); // Initialize Session
             tblFooter.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var btnSaveSettings = new Button { Text = "💾  Save Settings", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0) };
+            StyleButtonSecondary(btnSaveSettings); btnSaveSettings.Font = new Font(UIConstants.MainFontName, 9f);
+            btnSaveSettings.Click += (s, e) => {
+                SaveConfig();
+                MessageBox.Show("General project settings saved successfully!", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
 
             var btnOpenReleaseFolder = new Button { Text = "Open Output", Dock = DockStyle.Fill, Margin = new Padding(0, 0, 10, 0) };
             StyleButtonSecondary(btnOpenReleaseFolder); btnOpenReleaseFolder.Font = new Font(UIConstants.MainFontName, 9f);
@@ -450,8 +684,9 @@ namespace ReleasePrepTool.UI
             btnConnect.Click += BtnConnect_Click;
 
             tblFooter.Controls.Add(new Label(), 0, 0);   // empty filler
-            tblFooter.Controls.Add(btnOpenReleaseFolder, 1, 0);
-            tblFooter.Controls.Add(btnConnect, 2, 0);
+            tblFooter.Controls.Add(btnSaveSettings, 1, 0);
+            tblFooter.Controls.Add(btnOpenReleaseFolder, 2, 0);
+            tblFooter.Controls.Add(btnConnect, 3, 0);
             pnlFooter.Controls.Add(tblFooter);
             tabConfig.Controls.Add(pnlFooter);
 
@@ -478,29 +713,30 @@ namespace ReleasePrepTool.UI
             };
 
             // --- CARD: Restore Action ---
-            var cardRestore = CreateCardPanel("RESTORE FROM BACKUP FILE", 800, 178);
+            var cardRestore = CreateCardPanel("RESTORE FROM BACKUP FILE", 800, 310);
             
             var pnlRestoreGrid = new TableLayoutPanel {
                 Location = new Point(15, 40),
                 Width = 750,
-                Height = 120,
-                ColumnCount = 4,
-                RowCount = 3
+                Height = 235,
+                ColumnCount = 3,
+                RowCount = 5
             };
-            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250));
-            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
             pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
-            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
-            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            pnlRestoreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 85));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+            pnlRestoreGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
 
             var lblConnLabel = new Label { Text = "Connection:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
-            cmbRestoreConnection = new ComboBox { Name = "cmbRestoreConnection", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 9f) };
-            cmbRestoreConnection.Items.AddRange(new string[] { "Source (Dev)", "Target (Prod)", "Custom Connection..." });
-            cmbRestoreConnection.SelectedIndex = 0;
+            cmbRestoreConnection = new ComboBox { Name = "cmbRestoreConnection", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 2, 0, 2), DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 9f) };
+            UpdateRestoreConnectionItems();
 
             cmbRestoreConnection.SelectedIndexChanged += async (s, e) => {
+                if (_isUpdatingRestoreConnection) return;
                 if (cmbRestoreConnection.SelectedIndex == 2) // Custom
                 {
                     using (var dlg = new ConnectionDialog("Custom Restore Target", _customRestoreConfig))
@@ -509,32 +745,124 @@ namespace ReleasePrepTool.UI
                         {
                             _customRestoreConfig = dlg.Config;
                             _customRestorePgService = new PostgresService(_customRestoreConfig) { PostgresBinPath = txtPgBinPath.Text };
+                            UpdateRestoreConnectionItems();
                         }
                     }
                 }
+                await RefreshRequiredExtensionsAsync();
             };
 
-            var lblTargetDb = new Label { Text = "Database Name:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
-            var txtTargetDbName = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), PlaceholderText = "e.g. my_prod_restore_v1", Font = new Font(UIConstants.MainFontName, 9f), BorderStyle = BorderStyle.FixedSingle };
+            var lblTargetDb = new Label { Text = "Database:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
+            var txtTargetDbName = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 2, 0, 2), PlaceholderText = "e.g. my_prod_restore_v1", Font = new Font(UIConstants.MainFontName, 9f), BorderStyle = BorderStyle.FixedSingle };
 
             var lblRestoreFile = new Label { Text = "Backup File:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary };
-            var txtRestoreFilePath = new TextBox { Name = "txtRestoreFilePath", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0), ReadOnly = true, BorderStyle = BorderStyle.FixedSingle, Font = new Font(UIConstants.MainFontName, 9f), PlaceholderText = "Select .backup or .sql file..." };
-            var btnBrowseRestoreFile = new Button { Text = "Browse...", Width = 80, Height = 28, Anchor = AnchorStyles.Left, Margin = new Padding(8, 0, 0, 0), Font = new Font(UIConstants.MainFontName, 9f) };
+            txtRestoreFilePath = new Panel { 
+                Name = "txtRestoreFilePath", 
+                Anchor = AnchorStyles.Left | AnchorStyles.Right, 
+                Margin = new Padding(0, 7, 0, 7), 
+                Font = new Font(UIConstants.MainFontName, 9f), 
+                Text = "", 
+                ForeColor = UIConstants.TextSecondary,
+                BackColor = Color.White,
+                Height = 24,
+                Visible = false
+            };
+            txtRestoreFilePath.Paint += (s, e) => {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = new Rectangle(0, 0, txtRestoreFilePath.Width - 1, txtRestoreFilePath.Height - 1);
+                var radius = 4;
+                using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+                    path.AddArc(rect.X, rect.Y, radius * 2, radius * 2, 180, 90);
+                    path.AddArc(rect.Right - (radius * 2), rect.Y, radius * 2, radius * 2, 270, 90);
+                    path.AddArc(rect.Right - (radius * 2), rect.Bottom - (radius * 2), radius * 2, radius * 2, 0, 90);
+                    path.AddArc(rect.X, rect.Bottom - (radius * 2), radius * 2, radius * 2, 90, 90);
+                    path.CloseFigure();
+                    using (var br = new SolidBrush(txtRestoreFilePath.BackColor)) {
+                        g.FillPath(br, path);
+                    }
+                    var hasFile = txtRestoreFilePath.Tag != null;
+                    var borderColor = hasFile ? UIConstants.Primary : UIConstants.Border;
+                    using (var pen = new Pen(borderColor, 1)) {
+                        g.DrawPath(pen, path);
+                    }
+                }
+                var font = txtRestoreFilePath.Font;
+                var textColor = txtRestoreFilePath.ForeColor;
+                var textRect = new Rectangle(8, 0, txtRestoreFilePath.Width - 16, txtRestoreFilePath.Height);
+                TextRenderer.DrawText(g, txtRestoreFilePath.Text, font, textRect, textColor, 
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            };
+            txtRestoreFilePath.MouseMove += (s, e) => {
+                if (txtRestoreFilePath.Tag is string fullPath) {
+                    var currentTip = tooltip.GetToolTip(txtRestoreFilePath);
+                    if (currentTip != fullPath) {
+                        tooltip.SetToolTip(txtRestoreFilePath, fullPath);
+                    }
+                } else {
+                    tooltip.SetToolTip(txtRestoreFilePath, "");
+                }
+            };
+            var btnBrowseRestoreFile = new Button { Text = "Browse...", Width = 80, Height = 26, Anchor = AnchorStyles.Left, Margin = new Padding(8, 0, 0, 0), Font = new Font(UIConstants.MainFontName, 9f) };
             StyleButtonSecondary(btnBrowseRestoreFile);
 
-            btnBrowseRestoreFile.Click += (s, e) => {
+            btnBrowseRestoreFile.Click += async (s, e) => {
                 using (var ofd = new OpenFileDialog { Filter = "Backup Files (*.backup)|*.backup|SQL Scripts (*.sql)|*.sql" }) {
                     if (ofd.ShowDialog() == DialogResult.OK) {
-                        txtRestoreFilePath.Text = ofd.FileName;
+                        txtRestoreFilePath.Text = Path.GetFileName(ofd.FileName);
+                        txtRestoreFilePath.Tag = ofd.FileName;
+                        txtRestoreFilePath.BackColor = Color.FromArgb(232, 242, 252);
+                        txtRestoreFilePath.ForeColor = UIConstants.Primary;
+                        txtRestoreFilePath.Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold);
+                        txtRestoreFilePath.Visible = true;
+                        txtRestoreFilePath.Invalidate();
+                        await RefreshRequiredExtensionsAsync();
                     }
                 }
             };
 
-            btnBackupOld = new Button { Text = "↻  Restore DB from File...", Width = 230, Height = 40, Anchor = AnchorStyles.Right | AnchorStyles.None, Margin = new Padding(0, 0, 0, 0) };
+            var lblExtensions = new Label { 
+                Text = "Extensions:", 
+                Dock = DockStyle.Fill, 
+                TextAlign = ContentAlignment.TopRight, 
+                Padding = new Padding(0, 7, 0, 0),
+                Font = new Font(UIConstants.MainFontName, 9f), 
+                ForeColor = UIConstants.TextSecondary 
+            };
+            
+            pnlExtensions = new FlowLayoutPanel {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                AutoScroll = true,
+                Margin = new Padding(0, 4, 0, 0),
+                Padding = new Padding(0, 0, 18, 0) // Reserve space for vertical scrollbar
+            };
+            
+            // Initialize with placeholder
+            var lblSelectPlaceholder = new Label {
+                Text = "(Select a file to scan extensions)",
+                Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Italic),
+                ForeColor = Color.Gray,
+                AutoSize = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 3, 0, 3)
+            };
+            pnlExtensions.Controls.Add(lblSelectPlaceholder);
+
+            btnBackupOld = new Button { Text = "↻  Restore DB from File...", Width = 220, Height = 34, Anchor = AnchorStyles.Right, Margin = new Padding(0, 6, 0, 0) };
             StyleButtonPrimary(btnBackupOld); btnBackupOld.Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold);
 
             btnBackupOld.Click += (object? s, EventArgs e) => {
-                if (string.IsNullOrWhiteSpace(txtRestoreFilePath.Text)) {
+                if (_restoreCts != null) {
+                    btnBackupOld.Enabled = false;
+                    btnBackupOld.Text = "⌛ Cancelling...";
+                    _restoreCts.Cancel();
+                    return;
+                }
+
+                var fullPath = txtRestoreFilePath.Tag as string;
+                if (string.IsNullOrWhiteSpace(fullPath)) {
                     MessageBox.Show("Please select a backup or SQL file to restore first.", "No File Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
@@ -546,28 +874,499 @@ namespace ReleasePrepTool.UI
                     return;
                 }
 
-                RestoreDbAsync(selectedService, defaultDbName, txtTargetDbName.Text.Trim(), txtRestoreFilePath.Text);
+                _restoreCts = new System.Threading.CancellationTokenSource();
+                btnBackupOld.Text = "🛑 Stop Restore";
+                btnBackupOld.BackColor = UIConstants.Danger;
+
+                RestoreDbAsync(selectedService, defaultDbName, txtTargetDbName.Text.Trim(), fullPath);
             };
 
             pnlRestoreGrid.Controls.Add(lblConnLabel, 0, 0);
             pnlRestoreGrid.Controls.Add(cmbRestoreConnection, 1, 0);
+            pnlRestoreGrid.SetColumnSpan(cmbRestoreConnection, 2);
+            
             pnlRestoreGrid.Controls.Add(lblTargetDb, 0, 1);
             pnlRestoreGrid.Controls.Add(txtTargetDbName, 1, 1);
+            pnlRestoreGrid.SetColumnSpan(txtTargetDbName, 2);
+            
             pnlRestoreGrid.Controls.Add(lblRestoreFile, 0, 2);
             pnlRestoreGrid.Controls.Add(txtRestoreFilePath, 1, 2);
             pnlRestoreGrid.Controls.Add(btnBrowseRestoreFile, 2, 2);
-            pnlRestoreGrid.Controls.Add(btnBackupOld, 3, 0);
-            pnlRestoreGrid.SetRowSpan(btnBackupOld, 3);
+
+            pnlRestoreGrid.Controls.Add(lblExtensions, 0, 3);
+            pnlRestoreGrid.Controls.Add(pnlExtensions, 1, 3);
+            pnlRestoreGrid.SetColumnSpan(pnlExtensions, 2);
+            
+            pnlRestoreGrid.Controls.Add(btnBackupOld, 1, 4);
+            pnlRestoreGrid.SetColumnSpan(btnBackupOld, 2);
 
             cardRestore.Controls.Add(pnlRestoreGrid);
 
-            // --- LOG HEADER ---
-            var lblLogHeader = new Label {
-                Text = "\uD83D\uDCDC  RESTORE LOG", Dock = DockStyle.Top, Height = 28,
-                Margin = new Padding(0, 10, 0, 4),
-                Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.TextSecondary,
-                TextAlign = ContentAlignment.MiddleLeft
+            // --- CARD: Restore Options ---
+            var cardRestoreOptions = CreateCardPanel("RESTORE OPTIONS", 800, 310);
+            
+            var pnlRestoreOptionsGrid = new TableLayoutPanel {
+                Location = new Point(15, 40),
+                Width = 750,
+                Height = 255,
+                ColumnCount = 2,
+                RowCount = 8
             };
+            pnlRestoreOptionsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            pnlRestoreOptionsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            pnlRestoreOptionsGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+
+            chkCleanBefore = new CheckBox { Text = "Clean Before", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkSingleTransaction = new CheckBox { Text = "Single Trans", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkIncludeCreateDb = new CheckBox { Text = "Create DB", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            
+            chkOnlySchema = new CheckBox { Text = "Only Schema", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkOnlyData = new CheckBox { Text = "Only Data", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkDisableTriggers = new CheckBox { Text = "Disable Triggers", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            
+            chkNoOwner = new CheckBox { Text = "No Owner", Checked = true, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkNoPrivileges = new CheckBox { Text = "No Privilege", Checked = true, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkNoTablespaces = new CheckBox { Text = "No Tablespace", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            
+            chkNoDataFailedTables = new CheckBox { Text = "No Data Fail Tbl", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkExitOnError = new CheckBox { Text = "Exit On Error", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            chkUseSetSessionAuth = new CheckBox { Text = "SET SESSION AUTH", Checked = false, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+            
+            chkVerboseRestore = new CheckBox { Text = "Verbose Log", Checked = true, Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextPrimary, AutoSize = true };
+
+            var pnlJobs = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
+            var lblJobs = new Label { Text = "Jobs:", Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextSecondary, TextAlign = ContentAlignment.MiddleLeft, AutoSize = true, Margin = new Padding(0, 4, 4, 0) };
+            numRestoreJobs = new NumericUpDown { Value = 1, Minimum = 1, Maximum = 64, Font = new Font(UIConstants.MainFontName, 8f), Width = 45, Height = 20 };
+            pnlJobs.Controls.Add(lblJobs);
+            pnlJobs.Controls.Add(numRestoreJobs);
+            pnlJobs.Controls.Add(chkVerboseRestore);
+
+            chkOnlySchema.CheckedChanged += (s, e) => {
+                if (chkOnlySchema.Checked) chkOnlyData.Checked = false;
+            };
+            chkOnlyData.CheckedChanged += (s, e) => {
+                if (chkOnlyData.Checked) chkOnlySchema.Checked = false;
+            };
+
+            var lblFormat = new Label { Text = "Format:", Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextSecondary, AutoSize = true, Anchor = AnchorStyles.Right };
+            cmbRestoreFormat = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 8f), Margin = new Padding(2, 0, 4, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right };
+            cmbRestoreFormat.Items.AddRange(new string[] { "Auto", "Custom", "Tar", "Directory", "Plain" });
+            cmbRestoreFormat.SelectedIndex = 0;
+
+            var lblSection = new Label { Text = "Sec:", Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextSecondary, AutoSize = true, Anchor = AnchorStyles.Right };
+            cmbRestoreSection = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 8f), Margin = new Padding(2, 0, 4, 0), Anchor = AnchorStyles.Left | AnchorStyles.Right };
+            cmbRestoreSection.Items.AddRange(new string[] { "All", "Pre-data", "Data", "Post-data" });
+            cmbRestoreSection.SelectedIndex = 0;
+
+            var lblRole = new Label { Text = "Role:", Font = new Font(UIConstants.MainFontName, 8f), ForeColor = UIConstants.TextSecondary, AutoSize = true, Anchor = AnchorStyles.Right };
+            txtRoleName = new TextBox { Font = new Font(UIConstants.MainFontName, 8f), Margin = new Padding(2, 0, 2, 0), BorderStyle = BorderStyle.FixedSingle, Anchor = AnchorStyles.Left | AnchorStyles.Right };
+
+            var pnlBottomRow = new TableLayoutPanel {
+                Dock = DockStyle.Fill,
+                ColumnCount = 6,
+                RowCount = 1,
+                Margin = new Padding(0)
+            };
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 50)); // Format label
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f)); // Format combobox
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 35)); // Sec label
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f)); // Sec combobox
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38)); // Role label
+            pnlBottomRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f)); // Role textbox
+            pnlBottomRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
+            pnlBottomRow.Controls.Add(lblFormat, 0, 0);
+            pnlBottomRow.Controls.Add(cmbRestoreFormat, 1, 0);
+            pnlBottomRow.Controls.Add(lblSection, 2, 0);
+            pnlBottomRow.Controls.Add(cmbRestoreSection, 3, 0);
+            pnlBottomRow.Controls.Add(lblRole, 4, 0);
+            pnlBottomRow.Controls.Add(txtRoleName, 5, 0);
+
+            pnlRestoreOptionsGrid.Controls.Add(chkCleanBefore, 0, 0);
+            pnlRestoreOptionsGrid.Controls.Add(chkNoOwner, 1, 0);
+            
+            pnlRestoreOptionsGrid.Controls.Add(chkSingleTransaction, 0, 1);
+            pnlRestoreOptionsGrid.Controls.Add(chkNoPrivileges, 1, 1);
+            
+            pnlRestoreOptionsGrid.Controls.Add(chkOnlySchema, 0, 2);
+            pnlRestoreOptionsGrid.Controls.Add(chkNoTablespaces, 1, 2);
+            
+            pnlRestoreOptionsGrid.Controls.Add(chkOnlyData, 0, 3);
+            pnlRestoreOptionsGrid.Controls.Add(chkNoDataFailedTables, 1, 3);
+            
+            pnlRestoreOptionsGrid.Controls.Add(chkIncludeCreateDb, 0, 4);
+            pnlRestoreOptionsGrid.Controls.Add(chkExitOnError, 1, 4);
+            
+            pnlRestoreOptionsGrid.Controls.Add(chkDisableTriggers, 0, 5);
+            pnlRestoreOptionsGrid.Controls.Add(chkUseSetSessionAuth, 1, 5);
+            
+            pnlRestoreOptionsGrid.Controls.Add(pnlJobs, 0, 6);
+            pnlRestoreOptionsGrid.SetColumnSpan(pnlJobs, 2);
+
+            pnlRestoreOptionsGrid.Controls.Add(pnlBottomRow, 0, 7);
+            pnlRestoreOptionsGrid.SetColumnSpan(pnlBottomRow, 2);
+
+            cardRestoreOptions.Controls.Add(pnlRestoreOptionsGrid);
+
+
+
+            // --- CARD: SQL Scripts to Execute After Restore ---
+            var cardSqlScripts = CreateCardPanel("SQL SCRIPTS TO EXECUTE AFTER RESTORE (OPTIONAL)", 800, 310);
+            cardSqlScripts.Margin = new Padding(0);
+
+            var pnlSqlGrid = new TableLayoutPanel {
+                Location = new Point(15, 40),
+                Width = 750,
+                Height = 255,
+                ColumnCount = 2,
+                RowCount = 1
+            };
+            pnlSqlGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); // ListBox
+            pnlSqlGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108)); // Buttons
+            pnlSqlGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            lstPostRestoreSqls = new ListBox {
+                Dock = DockStyle.Fill,
+                Font = new Font(UIConstants.MainFontName, 9.5f),
+                BorderStyle = BorderStyle.FixedSingle,
+                DrawMode = DrawMode.OwnerDrawFixed,
+                ItemHeight = 24
+            };
+            lstPostRestoreSqls.DrawItem += (s, e) => {
+                if (e.Index < 0) return;
+                e.DrawBackground();
+                bool isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+                string fullText = lstPostRestoreSqls.Items[e.Index].ToString() ?? "";
+                int dotIdx = fullText.IndexOf(". ");
+                string numPart = "";
+                string namePart = fullText;
+                if (dotIdx > 0) {
+                    numPart = fullText.Substring(0, dotIdx + 2);
+                    namePart = fullText.Substring(dotIdx + 2);
+                }
+
+                // Determine status icon
+                string icon = "⚪";
+                Color iconColor = Color.Gray;
+                if (e.Index >= 0 && e.Index < _postRestoreSqlFiles.Count) {
+                    string filePath = _postRestoreSqlFiles[e.Index];
+                    if (_sqlFileStatuses.TryGetValue(filePath, out var status)) {
+                        switch (status.ToLower()) {
+                            case "running":
+                                icon = "⚡";
+                                iconColor = Color.FromArgb(255, 193, 7); // Warning/Yellow
+                                break;
+                            case "success":
+                                icon = "✅";
+                                iconColor = Color.FromArgb(40, 167, 69); // Success/Green
+                                break;
+                            case "error":
+                                icon = "❌";
+                                iconColor = Color.FromArgb(220, 53, 69); // Danger/Red
+                                break;
+                            default:
+                                icon = "⚪";
+                                iconColor = Color.Gray;
+                                break;
+                        }
+                    }
+                }
+
+                var font = e.Font ?? lstPostRestoreSqls.Font;
+                using (var sf = new StringFormat { LineAlignment = StringAlignment.Center }) {
+                    Brush numBrush;
+                    Brush nameBrush;
+                    Brush iconBrush = new SolidBrush(iconColor);
+                    if (isSelected) {
+                        numBrush = SystemBrushes.HighlightText;
+                        nameBrush = SystemBrushes.HighlightText;
+                    } else {
+                        numBrush = new SolidBrush(UIConstants.TextSecondary);
+                        nameBrush = new SolidBrush(UIConstants.Primary);
+                    }
+                    
+                    float x = e.Bounds.Left + 6;
+                    
+                    // Draw status icon
+                    e.Graphics.DrawString(icon, font, iconBrush, new RectangleF(x, e.Bounds.Top, 20, e.Bounds.Height), sf);
+                    x += 22;
+                    
+                    if (!string.IsNullOrEmpty(numPart)) {
+                        e.Graphics.DrawString(numPart, font, numBrush, new RectangleF(x, e.Bounds.Top, 30, e.Bounds.Height), sf);
+                        x += 25;
+                    }
+                    
+                    e.Graphics.DrawString(namePart, font, nameBrush, new RectangleF(x, e.Bounds.Top, e.Bounds.Width - x, e.Bounds.Height), sf);
+                    
+                    iconBrush.Dispose();
+                }
+                e.DrawFocusRectangle();
+            };
+
+
+
+            var pnlSqlButtons = new FlowLayoutPanel {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                Padding = new Padding(6, 0, 0, 0),
+                WrapContents = false
+            };
+
+            var btnAddSqls = new Button { Text = "➕  Add SQLs...", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 6) };
+            StyleButtonSecondary(btnAddSqls);
+            btnAddSqls.Font = new Font(UIConstants.MainFontName, 9f);
+
+            var btnAddSqlsByPattern = new Button { Text = "📂  Add Pattern...", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 6) };
+            StyleButtonSecondary(btnAddSqlsByPattern);
+            btnAddSqlsByPattern.Font = new Font(UIConstants.MainFontName, 9f);
+
+            var btnRemoveSql = new Button { Text = "❌  Remove", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 6) };
+            StyleButtonSecondary(btnRemoveSql);
+            btnRemoveSql.Font = new Font(UIConstants.MainFontName, 9f);
+
+            var btnClearSqls = new Button { Text = "🧹  Clear All", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 6) };
+            StyleButtonSecondary(btnClearSqls);
+            btnClearSqls.Font = new Font(UIConstants.MainFontName, 9f);
+
+            var btnMoveUp = new Button { Text = "▲  Move Up", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 6) };
+            StyleButtonSecondary(btnMoveUp);
+            btnMoveUp.Font = new Font(UIConstants.MainFontName, 9f);
+            btnMoveUp.Click += (s, e) => {
+                int idx = lstPostRestoreSqls.SelectedIndex;
+                if (idx > 0) {
+                    var temp = _postRestoreSqlFiles[idx];
+                    _postRestoreSqlFiles[idx] = _postRestoreSqlFiles[idx - 1];
+                    _postRestoreSqlFiles[idx - 1] = temp;
+                    
+                    lstPostRestoreSqls.Items.Clear();
+                    for (int i = 0; i < _postRestoreSqlFiles.Count; i++) {
+                        lstPostRestoreSqls.Items.Add($"{i + 1}. {Path.GetFileName(_postRestoreSqlFiles[i])}");
+                    }
+                    lstPostRestoreSqls.SelectedIndex = idx - 1;
+                }
+            };
+
+            var btnMoveDown = new Button { Text = "▼  Move Down", Width = 102, Height = 26, Margin = new Padding(0, 0, 0, 0) };
+            StyleButtonSecondary(btnMoveDown);
+            btnMoveDown.Font = new Font(UIConstants.MainFontName, 9f);
+            btnMoveDown.Click += (s, e) => {
+                int idx = lstPostRestoreSqls.SelectedIndex;
+                if (idx >= 0 && idx < _postRestoreSqlFiles.Count - 1) {
+                    var temp = _postRestoreSqlFiles[idx];
+                    _postRestoreSqlFiles[idx] = _postRestoreSqlFiles[idx + 1];
+                    _postRestoreSqlFiles[idx + 1] = temp;
+                    
+                    lstPostRestoreSqls.Items.Clear();
+                    for (int i = 0; i < _postRestoreSqlFiles.Count; i++) {
+                        lstPostRestoreSqls.Items.Add($"{i + 1}. {Path.GetFileName(_postRestoreSqlFiles[i])}");
+                    }
+                    lstPostRestoreSqls.SelectedIndex = idx + 1;
+                }
+            };
+
+            pnlSqlButtons.Controls.AddRange(new Control[] { btnAddSqls, btnAddSqlsByPattern, btnRemoveSql, btnClearSqls, btnMoveUp, btnMoveDown });
+
+            pnlSqlGrid.Controls.Add(lstPostRestoreSqls, 0, 0);
+            pnlSqlGrid.Controls.Add(pnlSqlButtons, 1, 0);
+
+            cardSqlScripts.Controls.Add(pnlSqlGrid);
+
+            btnAddSqls.Click += (s, e) => {
+                using (var ofd = new OpenFileDialog { Multiselect = true, Filter = "SQL Scripts (*.sql)|*.sql" }) {
+                    if (ofd.ShowDialog() == DialogResult.OK) {
+                        foreach (var file in ofd.FileNames) {
+                            if (!_postRestoreSqlFiles.Contains(file)) {
+                                _postRestoreSqlFiles.Add(file);
+                            }
+                        }
+                        _postRestoreSqlFiles = _postRestoreSqlFiles
+                            .OrderBy(f => {
+                                var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(f), @"^\d+");
+                                return match.Success && int.TryParse(match.Value, out int num) ? num : int.MaxValue;
+                            })
+                            .ThenBy(f => Path.GetFileName(f))
+                            .ToList();
+                        lstPostRestoreSqls.Items.Clear();
+                        for (int i = 0; i < _postRestoreSqlFiles.Count; i++) {
+                            lstPostRestoreSqls.Items.Add($"{i + 1}. {Path.GetFileName(_postRestoreSqlFiles[i])}");
+                        }
+                    }
+                }
+            };
+
+            btnAddSqlsByPattern.Click += (s, e) => {
+                using (var fbd = new FolderBrowserDialog()) {
+                    if (fbd.ShowDialog() == DialogResult.OK) {
+                        string defaultPattern = "";
+                        if (txtTargetDbName != null && !string.IsNullOrWhiteSpace(txtTargetDbName.Text)) {
+                            var parts = txtTargetDbName.Text.Split('_');
+                            defaultPattern = parts[0];
+                        }
+                        if (string.IsNullOrEmpty(defaultPattern)) {
+                            defaultPattern = "template";
+                        }
+
+                        string pattern = ShowInputDialog("Enter filename pattern (case-insensitive):", "Add SQLs by Pattern", defaultPattern);
+                        if (!string.IsNullOrWhiteSpace(pattern)) {
+                            var files = Directory.GetFiles(fbd.SelectedPath, "*.sql")
+                                .Where(file => Path.GetFileName(file).Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+
+                            if (files.Count == 0) {
+                                MessageBox.Show($"No SQL files containing '{pattern}' found in the selected folder.", "No Matches", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                                return;
+                            }
+
+                            int addedCount = 0;
+                            foreach (var file in files) {
+                                if (!_postRestoreSqlFiles.Contains(file)) {
+                                    _postRestoreSqlFiles.Add(file);
+                                    addedCount++;
+                                }
+                            }
+
+                            if (addedCount > 0) {
+                                _postRestoreSqlFiles = _postRestoreSqlFiles
+                                    .OrderBy(f => {
+                                        var match = System.Text.RegularExpressions.Regex.Match(Path.GetFileName(f), @"^\d+");
+                                        return match.Success && int.TryParse(match.Value, out int num) ? num : int.MaxValue;
+                                    })
+                                    .ThenBy(f => Path.GetFileName(f))
+                                    .ToList();
+
+                                lstPostRestoreSqls.Items.Clear();
+                                for (int i = 0; i < _postRestoreSqlFiles.Count; i++) {
+                                    lstPostRestoreSqls.Items.Add($"{i + 1}. {Path.GetFileName(_postRestoreSqlFiles[i])}");
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            btnRemoveSql.Click += (s, e) => {
+                if (lstPostRestoreSqls.SelectedIndex >= 0) {
+                    int idx = lstPostRestoreSqls.SelectedIndex;
+                    _postRestoreSqlFiles.RemoveAt(idx);
+                    
+                    // Re-populate to update numbering
+                    lstPostRestoreSqls.Items.Clear();
+                    for (int i = 0; i < _postRestoreSqlFiles.Count; i++) {
+                        lstPostRestoreSqls.Items.Add($"{i + 1}. {Path.GetFileName(_postRestoreSqlFiles[i])}");
+                    }
+                }
+            };
+
+            btnClearSqls.Click += (s, e) => {
+                _postRestoreSqlFiles.Clear();
+                lstPostRestoreSqls.Items.Clear();
+            };
+
+            // Show full path on Hover
+            lstPostRestoreSqls.MouseMove += (s, e) => {
+                int index = lstPostRestoreSqls.IndexFromPoint(e.Location);
+                if (index >= 0 && index < _postRestoreSqlFiles.Count) {
+                    string fullPath = _postRestoreSqlFiles[index];
+                    string currentTip = tooltip.GetToolTip(lstPostRestoreSqls);
+                    if (currentTip != fullPath) {
+                        tooltip.SetToolTip(lstPostRestoreSqls, fullPath);
+                    }
+                } else {
+                    tooltip.SetToolTip(lstPostRestoreSqls, "");
+                }
+            };
+
+
+            // Container to lay out the three cards side-by-side
+            var pnlCardsContainer = new TableLayoutPanel {
+                Width = 800,
+                Height = 310,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = new Padding(0)
+            };
+            pnlCardsContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34f));
+            pnlCardsContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26f));
+            pnlCardsContainer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40f));
+            pnlCardsContainer.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
+            cardRestore.Margin = new Padding(0, 0, 8, 0);
+            cardRestoreOptions.Margin = new Padding(8, 0, 8, 0);
+            cardSqlScripts.Margin = new Padding(8, 0, 0, 0);
+
+            pnlCardsContainer.Controls.Add(cardRestore, 0, 0);
+            pnlCardsContainer.Controls.Add(cardRestoreOptions, 1, 0);
+            pnlCardsContainer.Controls.Add(cardSqlScripts, 2, 0);
+
+            // --- LOG HEADER CONTROL ---
+            var pnlRestoreLogHeader = new TableLayoutPanel {
+                Dock = DockStyle.Top, Height = 36,
+                Margin = new Padding(0, 10, 0, 4),
+                ColumnCount = 6,
+                RowCount = 1
+            };
+            pnlRestoreLogHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150f)); // Title Column (no wrap)
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));  // Spacer
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80f));   // "Filter:" label Column (no wrap)
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180f)); // Filter TextBox
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130f)); // Filter Type ComboBox
+            pnlRestoreLogHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80f));  // Clear button (reduced width)
+
+            var lblLogHeaderTitle = new Label {
+                Text = "\uD83D\uDCDC  RESTORE LOG", AutoSize = true,
+                Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.TextSecondary,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom
+            };
+
+            var lblLogFilter = new Label {
+                Text = "🔍 Filter:", AutoSize = true,
+                Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary,
+                TextAlign = ContentAlignment.MiddleRight,
+                Anchor = AnchorStyles.Right | AnchorStyles.Top | AnchorStyles.Bottom
+            };
+
+            txtLogFilter = new TextBox {
+                Margin = new Padding(2, 0, 2, 0), Height = 22,
+                Font = new Font(UIConstants.MainFontName, 8.5f), BorderStyle = BorderStyle.FixedSingle,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right
+            };
+            txtLogFilter.TextChanged += (s, e) => ApplyLogFilter();
+
+            cmbLogFilterType = new ComboBox {
+                Margin = new Padding(2, 0, 2, 0), Height = 22,
+                DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(UIConstants.MainFontName, 8.5f),
+                Anchor = AnchorStyles.Left | AnchorStyles.Right
+            };
+            cmbLogFilterType.Items.AddRange(new string[] { "All Logs", "Errors (❌/error)", "Success (✅)", "Info/Cmd" });
+            cmbLogFilterType.SelectedIndex = 0;
+            cmbLogFilterType.SelectedIndexChanged += (s, e) => ApplyLogFilter();
+
+            var btnClearRestoreLog = new Button {
+                Text = "🧹 Clear", Margin = new Padding(4, 0, 0, 0), Height = 26,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right
+            };
+            StyleButtonSecondary(btnClearRestoreLog);
+            btnClearRestoreLog.Font = new Font(UIConstants.MainFontName, 8.5f);
+            btnClearRestoreLog.Click += (s, e) => {
+                _restoreLogLines.Clear();
+                if (txtBackupLog != null) txtBackupLog.Clear();
+            };
+
+            pnlRestoreLogHeader.Controls.Add(lblLogHeaderTitle, 0, 0);
+            pnlRestoreLogHeader.Controls.Add(new Control { Visible = false }, 1, 0); // Spacer dummy
+            pnlRestoreLogHeader.Controls.Add(lblLogFilter, 2, 0);
+            pnlRestoreLogHeader.Controls.Add(txtLogFilter, 3, 0);
+            pnlRestoreLogHeader.Controls.Add(cmbLogFilterType, 4, 0);
+            pnlRestoreLogHeader.Controls.Add(btnClearRestoreLog, 5, 0);
 
             // --- LOG PANEL (responsive) ---
             var pnlBackupLog = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = UIConstants.ConsoleBg };
@@ -582,24 +1381,28 @@ namespace ReleasePrepTool.UI
                 WrapContents = false 
             };
             pnlBackupTop.Controls.Add(lblBackupIntro);
-            pnlBackupTop.Controls.Add(cardRestore);
+            pnlBackupTop.Controls.Add(pnlCardsContainer);
 
             // Build tab — order matters for Dock layout (last added = topmost)
             panelBackup.Controls.Add(pnlBackupLog);      // Fill (bottom priority, added first)
-            panelBackup.Controls.Add(lblLogHeader);       // Top
+            panelBackup.Controls.Add(pnlRestoreLogHeader);       // Top
             panelBackup.Controls.Add(pnlBackupTop);       // Top (topmost priority, added last)
 
             // Responsive width for card
             void UpdateBackupWidths() {
                 var w = Math.Max(400, panelBackup.ClientSize.Width - panelBackup.Padding.Horizontal);
                 pnlBackupTop.Width = w;
-                cardRestore.Width = w;
-                pnlRestoreGrid.Width = Math.Max(200, w - 30);
+                pnlCardsContainer.Width = w;
+                pnlRestoreGrid.Width = Math.Max(150, cardRestore.ClientSize.Width - 30);
+                pnlRestoreOptionsGrid.Width = Math.Max(150, cardRestoreOptions.ClientSize.Width - 30);
+                pnlSqlGrid.Width = Math.Max(150, cardSqlScripts.ClientSize.Width - 30);
             }
             panelBackup.SizeChanged += (s, e) => UpdateBackupWidths();
             panelBackup.HandleCreated += (s, e) => UpdateBackupWidths();
 
+
             tabBackup.Controls.Add(panelBackup);
+
 
 
             // 3. Compare Schema Tab
@@ -717,6 +1520,12 @@ namespace ReleasePrepTool.UI
             StyleButtonSecondary(btnEditSchema); btnEditSchema.Font = new Font(UIConstants.IconFontName, 12f);
             tooltip.SetToolTip(btnEditSchema, "Edit/Review generated schema script");
             
+            chkTuningSchema = new CheckBox { Text = "Tuning Script (Safe Run)", AutoSize = true, Location = new Point(12, 20), Checked = false, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
+            tooltip.SetToolTip(chkTuningSchema, "Ensure output scripts contain idempotent checks (e.g. IF NOT EXISTS, DROP IF EXISTS) to prevent errors on different target databases.");
+
+            chkIncludeOwner = new CheckBox { Text = "Include OWNER TO", AutoSize = true, Location = new Point(12, 20), Checked = false, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
+            tooltip.SetToolTip(chkIncludeOwner, "Include ALTER ... OWNER TO statements in generated script and compare schema owner differences.");
+
             pnlStatusLabels = new FlowLayoutPanel { 
                 Location = new Point(12, 14),
                 FlowDirection = FlowDirection.LeftToRight,
@@ -724,7 +1533,7 @@ namespace ReleasePrepTool.UI
                 BackColor = Color.Transparent
             };
             
-            pnlActionBar.Controls.AddRange(new Control[] { btnGenerateSchema, btnOpenSchemaFolder, btnEditSchema, pnlStatusLabels });
+            pnlActionBar.Controls.AddRange(new Control[] { btnGenerateSchema, btnOpenSchemaFolder, btnEditSchema, chkTuningSchema, chkIncludeOwner, pnlStatusLabels });
 
             void RepositionActionBar() {
                 if (pnlActionBar.Width == 0) return;
@@ -738,6 +1547,12 @@ namespace ReleasePrepTool.UI
                     btnEditSchema.Location = new Point(currentX, 12);
                     currentX += 40 + 8;
                 }
+                
+                chkTuningSchema.Location = new Point(currentX, 19);
+                currentX += chkTuningSchema.Width + 16;
+                
+                chkIncludeOwner.Location = new Point(currentX, 19);
+                currentX += chkIncludeOwner.Width + 16;
                 
                 currentX += 16; // Margin before badges
                 pnlStatusLabels.Location = new Point(currentX, 14);
@@ -916,6 +1731,11 @@ namespace ReleasePrepTool.UI
             
             chkUseUpsert = new CheckBox { Text = "Use UPSERT", AutoSize = true, Margin = new Padding(0, 5, 0, 0), Checked = true, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
             pnlDataOptions.Controls.Add(chkUseUpsert);
+            
+            chkTuningData = new CheckBox { Text = "Tuning Script (Safe Run)", AutoSize = true, Margin = new Padding(15, 5, 0, 0), Checked = false, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
+            tooltip.SetToolTip(chkTuningData, "Ensure output scripts contain idempotent checks (e.g. ON CONFLICT DO NOTHING / UPDATE) to prevent errors on different target databases.");
+            pnlDataOptions.Controls.Add(chkTuningData);
+            
             cardDataSelection.Controls.Add(pnlDataOptions);
             pnlDataOptions.BringToFront(); // Show above card decorations
             var pnlDataActions = new FlowLayoutPanel { Location = new Point(14, 105), Size = new Size(760, 56), Padding = new Padding(0, 9, 0, 9), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.White };
@@ -1888,6 +2708,350 @@ namespace ReleasePrepTool.UI
             pnlAiMain.Controls.Add(lblAiIntro);         // Top (topmost priority, added last)
             
             tabAi.Controls.Add(pnlAiMain);
+
+            // 10. Other Tab
+            var tabOther = new TabPage("10. Other") { BackColor = Color.White };
+            var pnlOtherMain = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 20, 24, 20) };
+
+            var lblOtherIntro = new Label {
+                Text = "Convert SQL script files by safe-tuning statement syntax or filtering specific components like owner, privileges, tablespaces, and comments.",
+                Dock = DockStyle.Top, Height = 42,
+                Font = new Font(UIConstants.MainFontName, 9.5f), ForeColor = UIConstants.TextSecondary
+            };
+
+            var cardOtherSetup = CreateCardPanel("SQL SCRIPT CONVERTER", 800, 310);
+            cardOtherSetup.Dock = DockStyle.Top;
+
+            var pnlOtherGrid = new TableLayoutPanel {
+                Location = new Point(15, 40),
+                Width = 760,
+                Height = 255,
+                ColumnCount = 3,
+                RowCount = 7,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
+            };
+            pnlOtherGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
+            pnlOtherGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            pnlOtherGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
+
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            pnlOtherGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+
+            // Row 0: Source File Label, TextBox & Browse button
+            var lblConvertSrc = new Label { Text = "Source SQL File:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary, Margin = new Padding(0, 4, 8, 0) };
+            txtConvertSourceFile = new TextBox { Anchor = AnchorStyles.Left | AnchorStyles.Right, ReadOnly = true, BackColor = UIConstants.Surface, Font = new Font(UIConstants.MainFontName, 9f), BorderStyle = BorderStyle.FixedSingle, Height = 28, Margin = new Padding(0, 3, 0, 0) };
+            btnBrowseConvertFile = new Button { Text = "Browse...", Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(8, 2, 0, 0), Font = new Font(UIConstants.MainFontName, 9f), Height = 28 };
+            StyleButtonSecondary(btnBrowseConvertFile);
+
+            // Row 1: Checkbox: Tuning Script (Safe Run)
+            var pnlCheckboxRowTuning = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 28 };
+            chkConvertTuning = new CheckBox { Text = "Tuning Script (Safe Run)", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            pnlCheckboxRowTuning.Controls.Add(chkConvertTuning);
+
+            // Row 2: Checkboxes: Ignore OWNER TO, Ignore Tablespaces, Ignore Comments
+            var pnlCheckboxRow2 = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 28 };
+            chkIgnoreOwner = new CheckBox { Text = "Ignore OWNER TO", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreTablespaces = new CheckBox { Text = "Ignore Tablespaces", Checked = false, AutoSize = false, Width = 200, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreComments = new CheckBox { Text = "Ignore Comments", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 0, 0) };
+            pnlCheckboxRow2.Controls.AddRange(new Control[] { chkIgnoreOwner, chkIgnoreTablespaces, chkIgnoreComments });
+
+            // Row 3: Checkboxes: Ignore Privileges, Ignore Subscriptions, Ignore Security Labels
+            var pnlCheckboxRow3 = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 28 };
+            chkIgnorePrivileges = new CheckBox { Text = "Ignore Privileges (GRANT/REVOKE)", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreSubscriptions = new CheckBox { Text = "Ignore Subscriptions", Checked = false, AutoSize = false, Width = 200, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreSecurityLabels = new CheckBox { Text = "Ignore Security Labels", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 0, 0) };
+            pnlCheckboxRow3.Controls.AddRange(new Control[] { chkIgnorePrivileges, chkIgnoreSubscriptions, chkIgnoreSecurityLabels });
+
+            // Row 4: Checkboxes: Ignore Publications, Ignore Data, Ignore Schema
+            var pnlCheckboxRow4 = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 28 };
+            chkIgnorePublications = new CheckBox { Text = "Ignore Publications", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreData = new CheckBox { Text = "Ignore Data (INSERT/COPY)", Checked = false, AutoSize = false, Width = 200, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreSchema = new CheckBox { Text = "Ignore Schema (CREATE/DROP SCHEMA)", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 0, 0) };
+            pnlCheckboxRow4.Controls.AddRange(new Control[] { chkIgnorePublications, chkIgnoreData, chkIgnoreSchema });
+
+            // Row 5: Checkbox: Ignore Table Access Methods, Ignore Transaction
+            var pnlCheckboxRow5 = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 28 };
+            chkIgnoreTableAccessMethods = new CheckBox { Text = "Ignore Table Access Methods (USING)", Checked = false, AutoSize = false, Width = 260, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 20, 0) };
+            chkIgnoreTransaction = new CheckBox { Text = "Ignore Transaction (BEGIN/COMMIT/END)", Checked = false, AutoSize = false, Width = 300, Height = 24, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary, Margin = new Padding(0, 2, 0, 0) };
+            pnlCheckboxRow5.Controls.AddRange(new Control[] { chkIgnoreTableAccessMethods, chkIgnoreTransaction });
+
+            var pnlConvertActions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 4, 0, 0), WrapContents = false, Height = 42 };
+            btnAnalyzeScript = new Button { Text = "🔍  Analyze Script", Width = 160, Height = 38, Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold), Margin = new Padding(0, 0, 10, 0) };
+            StyleButtonSecondary(btnAnalyzeScript);
+            btnReviewScript = new Button { Text = "📝  Review Changes", Width = 180, Height = 38, Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold), Margin = new Padding(0, 0, 10, 0), Enabled = false };
+            StyleButtonSecondary(btnReviewScript);
+            btnConvertScript = new Button { Text = "⚡  Convert SQL Script", Width = 200, Height = 38, Font = new Font(UIConstants.MainFontName, 9.5f, FontStyle.Bold), Margin = new Padding(0, 0, 10, 0) };
+            StyleButtonPrimary(btnConvertScript);
+            btnOpenConvertFolder = new Button { Text = "📂  Open Folder", Width = 140, Height = 38, Font = new Font(UIConstants.MainFontName, 9f), Enabled = false, Margin = new Padding(0) };
+            StyleButtonSecondary(btnOpenConvertFolder);
+            pnlConvertActions.Controls.AddRange(new Control[] { btnAnalyzeScript, btnReviewScript, btnConvertScript, btnOpenConvertFolder });
+
+            pnlOtherGrid.Controls.Add(lblConvertSrc, 0, 0);
+            pnlOtherGrid.Controls.Add(txtConvertSourceFile, 1, 0);
+            pnlOtherGrid.Controls.Add(btnBrowseConvertFile, 2, 0);
+            
+            pnlOtherGrid.Controls.Add(new Label { Text = "Tuning Options:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary, Margin = new Padding(0, 4, 8, 0) }, 0, 1);
+            pnlOtherGrid.Controls.Add(pnlCheckboxRowTuning, 1, 1);
+            
+            pnlOtherGrid.Controls.Add(new Label { Text = "Filters (Ignore):", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextSecondary, Margin = new Padding(0, 4, 8, 0) }, 0, 2);
+            pnlOtherGrid.Controls.Add(pnlCheckboxRow2, 1, 2);
+            pnlOtherGrid.Controls.Add(pnlCheckboxRow3, 1, 3);
+            pnlOtherGrid.Controls.Add(pnlCheckboxRow4, 1, 4);
+            pnlOtherGrid.Controls.Add(pnlCheckboxRow5, 1, 5);
+            pnlOtherGrid.Controls.Add(pnlConvertActions, 1, 6);
+
+            cardOtherSetup.Controls.Add(pnlOtherGrid);
+
+            var spacerOther1 = new Panel { Dock = DockStyle.Top, Height = 16 };
+
+            var lblOtherLogHeader = new Label {
+                Text = "📋  CONVERSION LOG", Dock = DockStyle.Top, Height = 28,
+                Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold), ForeColor = UIConstants.TextSecondary,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            var pnlOtherLog = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12), BackColor = UIConstants.ConsoleBg };
+            txtConvertLog = new TextBox { Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical, ReadOnly = true };
+            StyleTextBoxConsole(txtConvertLog);
+            pnlOtherLog.Controls.Add(txtConvertLog);
+
+            pnlOtherMain.Controls.Add(pnlOtherLog);        // Fill
+            pnlOtherMain.Controls.Add(lblOtherLogHeader);    // Top
+            pnlOtherMain.Controls.Add(spacerOther1);        // Spacer
+            pnlOtherMain.Controls.Add(cardOtherSetup);      // Top
+            pnlOtherMain.Controls.Add(lblOtherIntro);        // Top
+
+            tabOther.Controls.Add(pnlOtherMain);
+
+            // Responsive widths for Tab 10
+            void UpdateOtherWidths() {
+                var w = Math.Max(400, pnlOtherMain.ClientSize.Width - pnlOtherMain.Padding.Horizontal);
+                cardOtherSetup.Width = w;
+                pnlOtherGrid.Width = Math.Max(200, w - 30);
+            }
+            pnlOtherMain.SizeChanged += (s, e) => UpdateOtherWidths();
+            pnlOtherMain.HandleCreated += (s, e) => UpdateOtherWidths();
+
+            // Wire Tab 10 events
+            btnBrowseConvertFile.Click += (s, e) => {
+                using (var ofd = new OpenFileDialog { Filter = "SQL Script Files (*.sql)|*.sql|All Files (*.*)|*.*" }) {
+                    if (ofd.ShowDialog() == DialogResult.OK) {
+                        txtConvertSourceFile.Text = ofd.FileName;
+                        SaveConfig();
+                    }
+                }
+            };
+
+            btnConvertScript.Click += async (s, e) => {
+                string srcPath = txtConvertSourceFile.Text;
+                if (string.IsNullOrWhiteSpace(srcPath) || !File.Exists(srcPath)) {
+                    MessageBox.Show("Please select a valid source SQL script file first.", "No File Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                btnConvertScript.Text = "⌛ Converting...";
+                btnConvertScript.Enabled = false;
+                txtConvertLog.Clear();
+                txtConvertLog.AppendText($"Starting script conversion on: {srcPath}\r\n");
+
+                try {
+                    // Read file
+                    string rawSql = await File.ReadAllTextAsync(srcPath);
+                    txtConvertLog.AppendText($"Read {rawSql.Length} characters of source SQL script.\r\n");
+
+                    // Run convert service
+                    string targetSchema = cmbTargetSchema.Text;
+                    if (string.IsNullOrEmpty(targetSchema)) targetSchema = "public";
+
+                    bool tuneScript = chkConvertTuning.Checked;
+                    bool ignoreOwner = chkIgnoreOwner.Checked;
+                    bool ignorePrivileges = chkIgnorePrivileges.Checked;
+                    bool ignoreTablespaces = chkIgnoreTablespaces.Checked;
+                    bool ignoreComments = chkIgnoreComments.Checked;
+                    bool ignorePublications = chkIgnorePublications.Checked;
+                    bool ignoreSubscriptions = chkIgnoreSubscriptions.Checked;
+                    bool ignoreSecurityLabels = chkIgnoreSecurityLabels.Checked;
+                    bool ignoreTableAccessMethods = chkIgnoreTableAccessMethods.Checked;
+                    bool ignoreData = chkIgnoreData.Checked;
+                    bool ignoreSchema = chkIgnoreSchema.Checked;
+                    bool ignoreTransaction = chkIgnoreTransaction.Checked;
+
+                    var convertResult = await Task.Run(() => SqlTuningHelper.ConvertScript(
+                        rawSql,
+                        tuneScript,
+                        targetSchema,
+                        ignoreOwner,
+                        ignorePrivileges,
+                        ignoreTablespaces,
+                        ignoreComments,
+                        ignorePublications,
+                        ignoreSubscriptions,
+                        ignoreSecurityLabels,
+                        ignoreTableAccessMethods,
+                        ignoreData,
+                        ignoreSchema,
+                        ignoreTransaction
+                    ));
+
+                    // Write result to file
+                    string dir = Path.GetDirectoryName(srcPath) ?? "";
+                    string ext = Path.GetExtension(srcPath);
+                    string name = Path.GetFileNameWithoutExtension(srcPath);
+                    string targetPath = Path.Combine(dir, $"{name}_converted{ext}");
+
+                    await File.WriteAllTextAsync(targetPath, convertResult.ConvertedSql);
+
+                    // Display conversion log
+                    string convLog = convertResult.BuildLog(
+                        tuneScript, targetSchema,
+                        ignoreOwner, ignorePrivileges, ignoreTablespaces,
+                        ignoreComments, ignorePublications, ignoreSubscriptions,
+                        ignoreSecurityLabels, ignoreTableAccessMethods,
+                        ignoreData, ignoreSchema, ignoreTransaction);
+                    txtConvertLog.AppendText(convLog);
+
+                    txtConvertLog.AppendText($"\r\nConversion finished!\r\n");
+                    txtConvertLog.AppendText($"Saved to: {targetPath}\r\n");
+
+                    _lastConvertedScriptPath = targetPath;
+                    btnOpenConvertFolder.Enabled = true;
+
+                    MessageBox.Show($"Script conversion completed successfully!\n\nSaved to: {targetPath}", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex) {
+                    txtConvertLog.AppendText($"\r\n❌ Error: {ex.Message}\r\n");
+                    MessageBox.Show($"Error during script conversion: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally {
+                    btnConvertScript.Text = "⚡  Convert SQL Script";
+                    btnConvertScript.Enabled = true;
+                }
+            };
+
+            btnAnalyzeScript.Click += async (s, e) => {
+                string srcPath = txtConvertSourceFile.Text;
+                if (string.IsNullOrWhiteSpace(srcPath) || !File.Exists(srcPath)) {
+                    MessageBox.Show("Please select a valid source SQL script file first.", "No File Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                btnAnalyzeScript.Text = "⌛ Analyzing...";
+                btnAnalyzeScript.Enabled = false;
+                txtConvertLog.Clear();
+                txtConvertLog.AppendText($"Starting script analysis on: {srcPath}\r\n\r\n");
+
+                try {
+                    // Read file
+                    string rawSql = await File.ReadAllTextAsync(srcPath);
+                    txtConvertLog.AppendText($"Read {rawSql.Length} characters of source SQL script.\r\n");
+
+                    // Run convert service in dry run mode
+                    string targetSchema = cmbTargetSchema.Text;
+                    if (string.IsNullOrEmpty(targetSchema)) targetSchema = "public";
+
+                    string report = await Task.Run(() => SqlTuningHelper.AnalyzeScript(
+                        rawSql,
+                        chkConvertTuning.Checked,
+                        targetSchema,
+                        chkIgnoreOwner.Checked,
+                        chkIgnorePrivileges.Checked,
+                        chkIgnoreTablespaces.Checked,
+                        chkIgnoreComments.Checked,
+                        chkIgnorePublications.Checked,
+                        chkIgnoreSubscriptions.Checked,
+                        chkIgnoreSecurityLabels.Checked,
+                        chkIgnoreTableAccessMethods.Checked,
+                        chkIgnoreData.Checked,
+                        chkIgnoreSchema.Checked,
+                        chkIgnoreTransaction.Checked
+                    ));
+
+                    txtConvertLog.AppendText(report);
+                    btnReviewScript.Enabled = true;
+                }
+                catch (Exception ex) {
+                    txtConvertLog.AppendText($"\r\n❌ Error: {ex.Message}\r\n");
+                    MessageBox.Show($"Error during script analysis: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally {
+                    btnAnalyzeScript.Text = "🔍  Analyze Script";
+                    btnAnalyzeScript.Enabled = true;
+                }
+            };
+
+            btnReviewScript.Click += async (s, e) => {
+                string srcPath = txtConvertSourceFile.Text;
+                if (string.IsNullOrWhiteSpace(srcPath) || !File.Exists(srcPath)) {
+                    MessageBox.Show("Please select a valid source SQL script file first.", "No File Selected", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                btnReviewScript.Text = "⌛ Loading Preview...";
+                btnReviewScript.Enabled = false;
+
+                try {
+                    string rawSql = await File.ReadAllTextAsync(srcPath);
+                    string targetSchema = cmbTargetSchema.Text;
+                    if (string.IsNullOrEmpty(targetSchema)) targetSchema = "public";
+
+                    var convertResult = await Task.Run(() => SqlTuningHelper.ConvertScript(
+                        rawSql,
+                        chkConvertTuning.Checked,
+                        targetSchema,
+                        chkIgnoreOwner.Checked,
+                        chkIgnorePrivileges.Checked,
+                        chkIgnoreTablespaces.Checked,
+                        chkIgnoreComments.Checked,
+                        chkIgnorePublications.Checked,
+                        chkIgnoreSubscriptions.Checked,
+                        chkIgnoreSecurityLabels.Checked,
+                        chkIgnoreTableAccessMethods.Checked,
+                        chkIgnoreData.Checked,
+                        chkIgnoreSchema.Checked,
+                        chkIgnoreTransaction.Checked
+                    ));
+
+                    string summaryReport = await Task.Run(() => SqlTuningHelper.AnalyzeScript(
+                        rawSql,
+                        chkConvertTuning.Checked,
+                        targetSchema,
+                        chkIgnoreOwner.Checked,
+                        chkIgnorePrivileges.Checked,
+                        chkIgnoreTablespaces.Checked,
+                        chkIgnoreComments.Checked,
+                        chkIgnorePublications.Checked,
+                        chkIgnoreSubscriptions.Checked,
+                        chkIgnoreSecurityLabels.Checked,
+                        chkIgnoreTableAccessMethods.Checked,
+                        chkIgnoreData.Checked,
+                        chkIgnoreSchema.Checked,
+                        chkIgnoreTransaction.Checked
+                    ));
+
+                    using (var reviewDlg = new SqlReviewDialog(rawSql, convertResult.ConvertedSql, summaryReport)) {
+                        reviewDlg.ShowDialog(this);
+                    }
+                }
+                catch (Exception ex) {
+                    MessageBox.Show($"Error loading preview: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally {
+                    btnReviewScript.Text = "📝  Review Changes";
+                    btnReviewScript.Enabled = true;
+                }
+            };
+
+            btnOpenConvertFolder.Click += (s, e) => {
+                if (!string.IsNullOrEmpty(_lastConvertedScriptPath) && File.Exists(_lastConvertedScriptPath)) {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{_lastConvertedScriptPath.Replace("/", "\\")}\"") { UseShellExecute = true });
+                }
+            };
+
             // Add all tabs
             tabControl.TabPages.Add(tabConfig);          // 1
             tabControl.TabPages.Add(tabBackup);          // 2
@@ -1898,6 +3062,7 @@ namespace ReleasePrepTool.UI
             tabControl.TabPages.Add(tabFinalExport);      // 7
             tabControl.TabPages.Add(tabConfigCompare);    // 8
             tabControl.TabPages.Add(tabAi);               // 9
+            tabControl.TabPages.Add(tabOther);            // 10
 
             tabControl.SelectedIndexChanged += async (s, e) => {
                 if ((tabControl.SelectedTab == tabCompareSchema || tabControl.SelectedTab == tabCompareData) && cmbSourceDb.Items.Count == 0)
@@ -1909,6 +3074,7 @@ namespace ReleasePrepTool.UI
             this.FormClosing += (s, e) => SaveConfig();
             this.Load += async (s, e) => {
                 LoadConfig();
+                await RefreshModelQuotaStatusAsync();
                 UpdateAiReadinessStatus();
                 
                 // Pre-load database lists for both comparison tabs if config is present
@@ -1943,7 +3109,9 @@ namespace ReleasePrepTool.UI
                 _newPgService = new PostgresService(_newDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
                 _dbCompareService = new DatabaseCompareService(_oldDbConfig!, _newDbConfig!);
                 _fileSystemService = new FileSystemService(txtReleasePath.Text, txtReleaseVersion.Text, txtProductName.Text);
-                _aiService = new AIOperationService(txtAiKey.Text);
+                var provider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini";
+                var model = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "gemini-2.0-flash" : cmbAiModel.Text.Split(' ')[0];
+                _aiService = new AIOperationService(txtAiKey.Text, model, provider);
                 _junkService = new JunkAnalysisService(_oldPgService);
 
                 _fileSystemService.EnsureDirectoryStructure();
@@ -1970,7 +3138,9 @@ namespace ReleasePrepTool.UI
                 _newPgService = new PostgresService(_newDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
                 _dbCompareService = new DatabaseCompareService(_oldDbConfig!, _newDbConfig!);
                 _fileSystemService = new FileSystemService(txtReleasePath.Text, txtReleaseVersion.Text, txtProductName.Text);
-                _aiService = new AIOperationService(txtAiKey.Text);
+                var provider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini";
+                var model = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "gemini-2.0-flash" : cmbAiModel.Text.Split(' ')[0];
+                _aiService = new AIOperationService(txtAiKey.Text, model, provider);
 
                 _fileSystemService.EnsureDirectoryStructure();
                 SaveConfig(); 
@@ -1987,6 +3157,21 @@ namespace ReleasePrepTool.UI
         private async void RestoreDbAsync(PostgresService? service, string dbName, string targetDbName, string filePath)
         {
             if (!EnsureServicesInitialized()) return;
+
+            // Clear previous restore logs and reset filters to default to show new logs immediately
+            _restoreLogLines.Clear();
+            if (txtBackupLog != null) txtBackupLog.Clear();
+            if (txtLogFilter != null) txtLogFilter.Text = "";
+            if (cmbLogFilterType != null && cmbLogFilterType.Items.Count > 0) cmbLogFilterType.SelectedIndex = 0;
+
+            _sqlFileStatuses.Clear();
+            foreach (var f in _postRestoreSqlFiles) {
+                _sqlFileStatuses[f] = "pending";
+            }
+            if (lstPostRestoreSqls != null) {
+                lstPostRestoreSqls.Invalidate();
+            }
+
             // Re-assign from fields if necessary.
             var activeService = (service == null) ? (dbName == OldDbName ? _oldPgService : _newPgService) : service;
             if (activeService == null) return;
@@ -2004,32 +3189,360 @@ namespace ReleasePrepTool.UI
             }
 
             if (targetConfig != null) {
-                txtBackupLog.AppendText($"Starting restore into '{effectiveName}' on database server '{targetConfig.Host}:{targetConfig.Port}' (User: {targetConfig.Username}) from {filePath}...\r\n");
+                AppendRestoreLog($"Starting restore into '{effectiveName}' on database server '{targetConfig.Host}:{targetConfig.Port}' (User: {targetConfig.Username}) from {filePath}...");
             } else {
-                txtBackupLog.AppendText($"Starting restore into '{effectiveName}' from {filePath}...\r\n");
+                AppendRestoreLog($"Starting restore into '{effectiveName}' from {filePath}...");
             }
-            btnBackupOld.Enabled = false;
+            // Keep button enabled so the user can click it to cancel the restore
+            int errorCount = 0;
+            int warningCount = 0;
+            bool overallSuccess = false;
+
             try
             {
                 var ext = Path.GetExtension(filePath).ToLower();
                 // Thread-safe callback: marshal each line onto the UI thread
                 Action<string> onOutput = line =>
                 {
-                    if (txtBackupLog != null && txtBackupLog.InvokeRequired)
-                        txtBackupLog.Invoke(() => txtBackupLog.AppendText(line + "\r\n"));
-                    else
-                        txtBackupLog?.AppendText(line + "\r\n");
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        var trimmed = line.Trim();
+                        var matchCleanup = PsqlPathCleanupRegex.Match(trimmed);
+                        if (matchCleanup.Success)
+                        {
+                            trimmed = $"[{matchCleanup.Groups[2].Value.ToUpper()}] Line {matchCleanup.Groups[1].Value}: {matchCleanup.Groups[3].Value}";
+                            line = trimmed;
+                        }
+                        else
+                        {
+                            var matchFallback = PsqlFallbackCleanupRegex.Match(trimmed);
+                            if (matchFallback.Success)
+                            {
+                                trimmed = $"Line {matchFallback.Groups[1].Value}: {matchFallback.Groups[2].Value}";
+                                line = trimmed;
+                            }
+                        }
+
+                        if (PsqlNoiseRegex.IsMatch(trimmed))
+                        {
+                            return;
+                        }
+
+                        if (trimmed.Contains("error:", StringComparison.OrdinalIgnoreCase) || 
+                            trimmed.Contains("ERROR:", StringComparison.Ordinal) ||
+                            trimmed.Contains("❌"))
+                        {
+                            errorCount++;
+                        }
+                        else if (trimmed.Contains("warning:", StringComparison.OrdinalIgnoreCase) || 
+                                 trimmed.Contains("WARNING:", StringComparison.Ordinal) ||
+                                 trimmed.Contains("⚠️"))
+                        {
+                            warningCount++;
+                        }
+                    }
+                    AppendRestoreLog(line);
                 };
-                await activeService.RestoreDatabaseAsync(ext, filePath, string.IsNullOrWhiteSpace(targetDbName) ? null : targetDbName, onOutput);
-                txtBackupLog.AppendText($"✅ Restore into '{effectiveName}' completed successfully.\r\n");
+                var opt = new RestoreOptions
+                {
+                    CleanBeforeRestore = chkCleanBefore.Checked,
+                    SingleTransaction = chkSingleTransaction.Checked,
+                    OnlySchema = chkOnlySchema.Checked,
+                    OnlyData = chkOnlyData.Checked,
+                    NoOwner = chkNoOwner.Checked,
+                    NoPrivileges = chkNoPrivileges.Checked,
+                    DisableTriggers = chkDisableTriggers.Checked,
+                    NoTablespaces = chkNoTablespaces.Checked,
+                    Verbose = chkVerboseRestore.Checked,
+                    NumberOfJobs = (int)numRestoreJobs.Value,
+                    Format = cmbRestoreFormat.SelectedItem?.ToString() ?? "Auto",
+                    Section = cmbRestoreSection.SelectedItem?.ToString() ?? "All",
+                    RoleName = txtRoleName.Text.Trim(),
+                    IncludeCreateDb = chkIncludeCreateDb.Checked,
+                    NoDataFailedTables = chkNoDataFailedTables.Checked,
+                    ExitOnError = chkExitOnError.Checked,
+                    UseSetSessionAuth = chkUseSetSessionAuth.Checked
+                };
+
+                if (pnlExtensions != null)
+                {
+                    foreach (Control ctrl in pnlExtensions.Controls)
+                    {
+                        if (ctrl is CheckBox chk && chk.Checked)
+                        {
+                            opt.ExtensionsToInstall.Add(chk.Text);
+                        }
+                    }
+                }
+
+                await activeService.RestoreDatabaseAsync(ext, filePath, string.IsNullOrWhiteSpace(targetDbName) ? null : targetDbName, opt, onOutput, _restoreCts?.Token ?? default);
+                AppendRestoreLog($"✅ Restore into '{effectiveName}' completed successfully.");
+
+                if (_postRestoreSqlFiles != null && _postRestoreSqlFiles.Count > 0)
+                {
+                    AppendRestoreLog($"⚡ Starting post-restore SQL scripts execution ({_postRestoreSqlFiles.Count} files)...");
+                    foreach (var sqlFile in _postRestoreSqlFiles)
+                    {
+                        var fileName = Path.GetFileName(sqlFile);
+                        AppendRestoreLog($"⌛ Running SQL script: {fileName} (Location: {sqlFile})...");
+                        _sqlFileStatuses[sqlFile] = "running";
+                        lstPostRestoreSqls.Invalidate();
+                        try
+                        {
+                            await activeService.ExecuteScriptFileAsync(effectiveName, sqlFile, onOutput, _restoreCts?.Token ?? default);
+                            _sqlFileStatuses[sqlFile] = "success";
+                            lstPostRestoreSqls.Invalidate();
+                            AppendRestoreLog($"✅ Successfully executed SQL script: {fileName}");
+                        }
+                        catch (Exception sqlEx)
+                        {
+                            _sqlFileStatuses[sqlFile] = "error";
+                            lstPostRestoreSqls.Invalidate();
+                            AppendRestoreLog($"❌ Error executing SQL script {fileName}: {sqlEx.Message}");
+                            throw new Exception($"Post-restore script execution stopped at {fileName} due to error: {sqlEx.Message}");
+                        }
+                    }
+                    AppendRestoreLog($"✅ All post-restore SQL scripts completed.");
+                }
+                overallSuccess = true;
             }
             catch (Exception ex)
             {
-                txtBackupLog.AppendText($"❌ Error during restore: {ex.Message}\r\n");
+                errorCount++;
+                AppendRestoreLog($"❌ Error during restore: {ex.Message}");
             }
             finally
             {
+                AppendRestoreLog("==================================================================================");
+                if (overallSuccess)
+                {
+                    if (errorCount == 0)
+                    {
+                        AppendRestoreLog($"🎉 SUMMARY: Restore into '{effectiveName}' completed successfully. Errors: 0, Warnings: {warningCount}");
+                    }
+                    else
+                    {
+                        AppendRestoreLog($"⚠️ SUMMARY: Restore into '{effectiveName}' completed with errors. Errors: {errorCount}, Warnings: {warningCount}");
+                    }
+                }
+                else
+                {
+                    AppendRestoreLog($"❌ SUMMARY: Restore into '{effectiveName}' failed. Errors: {errorCount}, Warnings: {warningCount}");
+                }
+                AppendRestoreLog("==================================================================================");
+
+                try
+                {
+                    Npgsql.NpgsqlConnection.ClearAllPools();
+                }
+                catch (Exception ex)
+                {
+                    AppendRestoreLog($"[WARNING] Failed to clear connection pools: {ex.Message}");
+                }
+
+                if (_restoreCts != null)
+                {
+                    _restoreCts.Dispose();
+                    _restoreCts = null;
+                }
+                btnBackupOld.Text = "↻  Restore DB from File...";
+                btnBackupOld.BackColor = UIConstants.Primary;
                 btnBackupOld.Enabled = true;
+            }
+        }
+
+        private void AppendRestoreLog(string line)
+        {
+            if (txtBackupLog == null) return;
+
+            if (txtBackupLog.InvokeRequired)
+            {
+                txtBackupLog.Invoke(() => AppendRestoreLog(line));
+                return;
+            }
+
+            if (line == null) return;
+            var lines = line.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            foreach (var l in lines)
+            {
+                _restoreLogLines.Add(l);
+            }
+
+            ApplyLogFilter();
+        }
+
+        private static string ShowInputDialog(string text, string caption, string defaultValue = "")
+        {
+            using (Form prompt = new Form())
+            {
+                prompt.Width = 400;
+                prompt.Height = 155;
+                prompt.FormBorderStyle = FormBorderStyle.FixedDialog;
+                prompt.Text = caption;
+                prompt.StartPosition = FormStartPosition.CenterParent;
+                prompt.MaximizeBox = false;
+                prompt.MinimizeBox = false;
+                prompt.BackColor = Color.White;
+
+                Label textLabel = new Label() { Left = 20, Top = 15, Text = text, Width = 360, Font = new Font(UIConstants.MainFontName, 9f), ForeColor = UIConstants.TextPrimary };
+                TextBox textBox = new TextBox() { Left = 20, Top = 42, Width = 360, Text = defaultValue, Font = new Font(UIConstants.MainFontName, 9.5f), BorderStyle = BorderStyle.FixedSingle };
+                Button confirmation = new Button() { Text = "OK", Left = 190, Width = 85, Height = 28, Top = 80, DialogResult = DialogResult.OK, Font = new Font(UIConstants.MainFontName, 9f, FontStyle.Bold) };
+                Button cancel = new Button() { Text = "Cancel", Left = 285, Width = 85, Height = 28, Top = 80, DialogResult = DialogResult.Cancel, Font = new Font(UIConstants.MainFontName, 9f) };
+
+                confirmation.BackColor = UIConstants.Primary;
+                confirmation.ForeColor = Color.White;
+                confirmation.FlatStyle = FlatStyle.Flat;
+                confirmation.FlatAppearance.BorderSize = 0;
+
+                cancel.BackColor = Color.White;
+                cancel.ForeColor = UIConstants.TextPrimary;
+                cancel.FlatStyle = FlatStyle.Flat;
+                cancel.FlatAppearance.BorderColor = UIConstants.Border;
+
+                prompt.Controls.Add(textBox);
+                prompt.Controls.Add(textLabel);
+                prompt.Controls.Add(confirmation);
+                prompt.Controls.Add(cancel);
+                prompt.AcceptButton = confirmation;
+                prompt.CancelButton = cancel;
+
+                return prompt.ShowDialog() == DialogResult.OK ? textBox.Text : "";
+            }
+        }
+
+        private void ApplyLogFilter()
+        {
+            if (txtBackupLog == null) return;
+
+            if (txtBackupLog.InvokeRequired)
+            {
+                txtBackupLog.Invoke(ApplyLogFilter);
+                return;
+            }
+
+            var filteredLines = new List<string>();
+            string textFilter = txtLogFilter.Text.Trim();
+            int filterType = cmbLogFilterType.SelectedIndex; // 0: All, 1: Errors, 2: Success, 3: Info/Cmd
+
+            foreach (var line in _restoreLogLines)
+            {
+                bool matchesText = string.IsNullOrEmpty(textFilter) || line.IndexOf(textFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+                bool matchesType = true;
+
+                if (filterType == 1) // Errors
+                {
+                    matchesType = !line.Contains("SUMMARY:") && !line.Contains("====") &&
+                                  (line.Contains("❌") || 
+                                   line.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                                   line.IndexOf("failed", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+                else if (filterType == 2) // Success
+                {
+                    matchesType = !line.Contains("SUMMARY:") && !line.Contains("====") &&
+                                  (line.Contains("✅") || 
+                                   line.IndexOf("success", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+                else if (filterType == 3) // Info/Cmd
+                {
+                    matchesType = !line.Contains("SUMMARY:") && !line.Contains("====") &&
+                                  (line.Contains("⚡") || 
+                                   line.Contains("⌛") || 
+                                   line.IndexOf("[INFO]", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                                   line.IndexOf("[CMD]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                   line.IndexOf("pg_restore", StringComparison.OrdinalIgnoreCase) >= 0);
+                }
+
+                if (matchesText && matchesType)
+                {
+                    filteredLines.Add(line);
+                }
+            }
+
+            txtBackupLog.Text = string.Join("\r\n", filteredLines) + (filteredLines.Count > 0 ? "\r\n" : "");
+            txtBackupLog.SelectionStart = txtBackupLog.TextLength;
+            txtBackupLog.ScrollToCaret();
+        }
+
+        private async Task RefreshRequiredExtensionsAsync()
+        {
+            if (pnlExtensions == null) return;
+            
+            pnlExtensions.Controls.Clear();
+            if (txtRestoreFilePath.Tag is string filePath && !string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
+            {
+                var ext = Path.GetExtension(filePath).ToLower();
+                var selectedService = cmbRestoreConnection.SelectedIndex == 2 ? _customRestorePgService : (cmbRestoreConnection.SelectedIndex == 0 ? _newPgService : _oldPgService);
+                if (selectedService != null)
+                {
+                    try
+                    {
+                        var lblScanning = new Label {
+                            Text = "Scanning backup file for required extensions...",
+                            Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Italic),
+                            ForeColor = Color.Gray,
+                            AutoSize = true,
+                            TextAlign = ContentAlignment.MiddleLeft,
+                            Margin = new Padding(0, 3, 0, 3)
+                        };
+                        pnlExtensions.Controls.Add(lblScanning);
+                        
+                        var requiredExts = await Task.Run(() => selectedService.GetRequiredExtensionsAsync(ext, filePath));
+                        
+                        pnlExtensions.Controls.Clear();
+                        if (requiredExts != null && requiredExts.Count > 0)
+                        {
+                            foreach (var reqExt in requiredExts)
+                            {
+                                var chk = new CheckBox {
+                                    Text = reqExt,
+                                    Checked = true,
+                                    AutoSize = true,
+                                    Font = new Font(UIConstants.MainFontName, 8.5f),
+                                    ForeColor = UIConstants.TextPrimary,
+                                    Margin = new Padding(0, 3, 8, 3)
+                                };
+                                pnlExtensions.Controls.Add(chk);
+                            }
+                        }
+                        else
+                        {
+                            var lblNone = new Label {
+                                Text = "(None required)",
+                                Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Italic),
+                                ForeColor = Color.Gray,
+                                AutoSize = true,
+                                TextAlign = ContentAlignment.MiddleLeft,
+                                Margin = new Padding(0, 3, 0, 3)
+                            };
+                            pnlExtensions.Controls.Add(lblNone);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        pnlExtensions.Controls.Clear();
+                        var lblError = new Label {
+                            Text = $"(Scan error: {ex.Message})",
+                            Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Italic),
+                            ForeColor = Color.Red,
+                            AutoSize = true,
+                            TextAlign = ContentAlignment.MiddleLeft,
+                            Margin = new Padding(0, 3, 0, 3)
+                        };
+                        pnlExtensions.Controls.Add(lblError);
+                    }
+                }
+            }
+            else
+            {
+                var lblSelect = new Label {
+                    Text = "(Select a file to scan extensions)",
+                    Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Italic),
+                    ForeColor = Color.Gray,
+                    AutoSize = true,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Margin = new Padding(0, 4, 0, 0)
+                };
+                pnlExtensions.Controls.Add(lblSelect);
             }
         }
 
@@ -2078,6 +3591,8 @@ namespace ReleasePrepTool.UI
                 case "Extensions": icon = UIConstants.IconExtension; iconColor = Color.FromArgb(0, 153, 153); break;
                 case "Roles": icon = UIConstants.IconRole; iconColor = Color.FromArgb(102, 102, 102); break;
                 case "Sequences": icon = UIConstants.IconSequence; iconColor = Color.FromArgb(153, 0, 153); break;
+                case "Enums": icon = UIConstants.IconSequence; iconColor = Color.FromArgb(153, 153, 0); break;
+                case "Types": icon = UIConstants.IconExtension; iconColor = Color.FromArgb(0, 120, 212); break;
             }
 
             // Detect status
@@ -2427,6 +3942,7 @@ namespace ReleasePrepTool.UI
 
             if (!EnsureServicesInitialized()) return;
             _dbCompareService = new DatabaseCompareService(_newDbConfig!, _oldDbConfig!); // Passing New then Old
+            _dbCompareService.IncludeOwner = chkIncludeOwner.Checked;
             treeSchema.Nodes.Clear();
             btnLoadTables.Text = "Loading...";
             btnLoadTables.Enabled = false;
@@ -2468,6 +3984,7 @@ namespace ReleasePrepTool.UI
                 var roleRoot = new TreeNode("Roles");
                 var sequenceRoot = new TreeNode("Sequences");
                 var enumRoot = new TreeNode("Enums");
+                var typeRoot = new TreeNode("Types");
                 var matViewRoot = new TreeNode("Materialized Views");
 
                 foreach (var table in allTables)
@@ -2543,6 +4060,13 @@ namespace ReleasePrepTool.UI
                     enumRoot.Nodes.Add(node);
                 }
 
+                foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Type"))
+                {
+                    var node = new TreeNode(diff.ObjectName) { Tag = diff };
+                    ApplyDiffColors(node, diff.DiffType);
+                    typeRoot.Nodes.Add(node);
+                }
+
                 foreach (var diff in _schemaDiffs.Where(d => d.ObjectType == "Materialized View"))
                 {
                     var node = new TreeNode(diff.ObjectName) { Tag = diff };
@@ -2560,6 +4084,7 @@ namespace ReleasePrepTool.UI
                 if (roleRoot.Nodes.Count > 0) treeSchema.Nodes.Add(roleRoot);
                 if (sequenceRoot.Nodes.Count > 0) treeSchema.Nodes.Add(sequenceRoot);
                 if (enumRoot.Nodes.Count > 0) treeSchema.Nodes.Add(enumRoot);
+                if (typeRoot.Nodes.Count > 0) treeSchema.Nodes.Add(typeRoot);
                 if (matViewRoot.Nodes.Count > 0) treeSchema.Nodes.Add(matViewRoot);
                 
                 tableRoot.Expand();
@@ -2581,7 +4106,7 @@ namespace ReleasePrepTool.UI
             {
                 pnlStatusLabels.Controls.Clear();
                 AddStatusBadge("Error", UIConstants.Danger);
-                txtBackupLog.AppendText($"\r\nDiff Error: {ex.Message}");
+                AppendRestoreLog($"Diff Error: {ex.Message}");
             }
             finally
             {
@@ -2613,12 +4138,16 @@ namespace ReleasePrepTool.UI
 
                 foreach (var r in selectedDiffs)
                 {
-                    sb.AppendLine($"-- {r.ObjectType}: {r.ObjectName} ({r.DiffType})");
                     sb.AppendLine(r.DiffScript);
                     sb.AppendLine();
                 }
 
                 var sql = sb.ToString();
+                if (chkTuningSchema.Checked)
+                {
+                    sql = SqlTuningHelper.TuneSchemaScript(sql, targetSchema);
+                }
+                
                 var path = _fileSystemService!.GetSqlScriptPath(NewDbName, true);
                 _fileSystemService!.WriteToFile(path, sql);
                 _fileSystemService!.UpdateScriptUpdateNote();
@@ -2638,6 +4167,8 @@ namespace ReleasePrepTool.UI
                 _lastSchemaExportPath = path;
                 btnOpenSchemaFolder.Visible = true;
                 btnEditSchema.Visible = true;
+
+                MessageBox.Show($"Schema migration script generated successfully!\n\nSaved to: {path}\n\nYou can now review the script or proceed with AI Review.", "Generation Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {
@@ -2656,13 +4187,31 @@ namespace ReleasePrepTool.UI
                     NewConfig = _newDbConfig,
                     PgBin = txtPgBinPath.Text, Version = txtReleaseVersion.Text, 
                     ReleasePath = txtReleasePath.Text, AiKey = txtAiKey.Text,
+                    AiProvider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini",
+                    AiModel = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "gemini-2.0-flash" : cmbAiModel.Text.Split(' ')[0],
                     ConfigCompareMode = rbCompareFolder.Checked ? "Folder" : "File",
                     ConfigCompareSource = txtOldConfigPath.Text,
                     ConfigCompareTarget = txtNewConfigPath.Text,
                     ConfigCompareSourceFile = _configCompareSourceFile,
                     ConfigCompareTargetFile = _configCompareTargetFile,
                     ConfigCompareSourceFolder = _configCompareSourceFolder,
-                    ConfigCompareTargetFolder = _configCompareTargetFolder
+                    ConfigCompareTargetFolder = _configCompareTargetFolder,
+                    
+                    // Tab 10 config
+                    ConvertSourceFile = txtConvertSourceFile.Text,
+                    ConvertTuning = chkConvertTuning.Checked,
+                    IgnoreOwner = chkIgnoreOwner.Checked,
+                    IgnorePrivileges = chkIgnorePrivileges.Checked,
+                    IgnoreTablespaces = chkIgnoreTablespaces.Checked,
+                    IgnoreComments = chkIgnoreComments.Checked,
+                    IgnorePublications = chkIgnorePublications.Checked,
+                    IgnoreSubscriptions = chkIgnoreSubscriptions.Checked,
+                    IgnoreSecurityLabels = chkIgnoreSecurityLabels.Checked,
+                    IgnoreTableAccessMethods = chkIgnoreTableAccessMethods.Checked,
+                    IgnoreData = chkIgnoreData.Checked,
+                    IgnoreSchema = chkIgnoreSchema.Checked,
+                    IgnoreTransaction = chkIgnoreTransaction.Checked,
+                    LastConvertedScriptPath = _lastConvertedScriptPath
                 };
                 File.WriteAllText("appsettings.local.json", Newtonsoft.Json.JsonConvert.SerializeObject(config));
             } catch { }
@@ -2687,10 +4236,28 @@ namespace ReleasePrepTool.UI
                         txtPgBinPath.Text = (string?)config.PgBin ?? txtPgBinPath.Text; 
                         txtReleaseVersion.Text = (string?)config.Version ?? txtReleaseVersion.Text;
                         txtReleasePath.Text = (string?)config.ReleasePath ?? txtReleasePath.Text; 
+                        
+                        string? provider = (string?)config.AiProvider;
+                        if (!string.IsNullOrEmpty(provider)) {
+                            int idx = cmbAiProvider.FindStringExact(provider);
+                            if (idx >= 0) cmbAiProvider.SelectedIndex = idx;
+                        }
+                        
                         txtAiKey.Text = (string?)config.AiKey ?? txtAiKey.Text;
                         if (string.IsNullOrWhiteSpace(txtAiKey.Text)) {
                             txtAiKey.Text = Environment.GetEnvironmentVariable("GEMINI_API_KEY") ?? "";
                         }
+                        
+                        string? model = (string?)config.AiModel;
+                        if (!string.IsNullOrEmpty(model)) {
+                            for (int i = 0; i < cmbAiModel.Items.Count; i++) {
+                                if (cmbAiModel.Items[i]?.ToString()?.StartsWith(model) == true) {
+                                    cmbAiModel.SelectedIndex = i;
+                                    break;
+                                }
+                            }
+                        }
+
                         UpdateConnectionLabels();
 
                         _configCompareSourceFile = (string?)config.ConfigCompareSourceFile ?? (string?)config.ConfigCompareSource ?? "";
@@ -2712,6 +4279,26 @@ namespace ReleasePrepTool.UI
                             }
                         } finally {
                             _suppressConfigEvents = false;
+                        }
+
+                        // Tab 10 config loading
+                        txtConvertSourceFile.Text = (string?)config.ConvertSourceFile ?? "";
+                        chkConvertTuning.Checked = (bool?)config.ConvertTuning ?? false;
+                        chkIgnoreOwner.Checked = (bool?)config.IgnoreOwner ?? false;
+                        chkIgnorePrivileges.Checked = (bool?)config.IgnorePrivileges ?? false;
+                        chkIgnoreTablespaces.Checked = (bool?)config.IgnoreTablespaces ?? false;
+                        chkIgnoreComments.Checked = (bool?)config.IgnoreComments ?? false;
+                        chkIgnorePublications.Checked = (bool?)config.IgnorePublications ?? false;
+                        chkIgnoreSubscriptions.Checked = (bool?)config.IgnoreSubscriptions ?? false;
+                        chkIgnoreSecurityLabels.Checked = (bool?)config.IgnoreSecurityLabels ?? false;
+                        chkIgnoreTableAccessMethods.Checked = (bool?)config.IgnoreTableAccessMethods ?? false;
+                        chkIgnoreData.Checked = (bool?)config.IgnoreData ?? false;
+                        chkIgnoreSchema.Checked = (bool?)config.IgnoreSchema ?? false;
+                        chkIgnoreTransaction.Checked = (bool?)config.IgnoreTransaction ?? false;
+                        
+                        _lastConvertedScriptPath = (string?)config.LastConvertedScriptPath ?? "";
+                        if (!string.IsNullOrEmpty(_lastConvertedScriptPath) && File.Exists(_lastConvertedScriptPath)) {
+                            btnOpenConvertFolder.Enabled = true;
                         }
                     }
                 }
@@ -3068,6 +4655,10 @@ namespace ReleasePrepTool.UI
             {
                 var options = GetDataCompareOptions();
                 var diffScript = await _dbCompareService!.GenerateDataDiffAsync(tablesToSync, sourceSchema, targetSchema, options);
+                if (chkTuningData.Checked)
+                {
+                    diffScript = SqlTuningHelper.TuneDataScript(diffScript, targetSchema);
+                }
                 
                 var fullPath = _fileSystemService!.GetSqlScriptPath(NewDbName, false);
                 var dir = Path.GetDirectoryName(fullPath);
@@ -3091,6 +4682,8 @@ namespace ReleasePrepTool.UI
                 btnOpenDataFolder.Visible = true;
                 btnEditData.Visible = true;
                 lblDataStatus.Text = $"✅ Exported to {fileNameOnly}";
+
+                MessageBox.Show($"Data synchronization script generated successfully!\n\nSaved to: {fullPath}\n\nYou can now review the script or proceed with AI Review.", "Generation Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
             }
             catch (Exception ex)

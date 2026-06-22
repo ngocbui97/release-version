@@ -33,6 +33,8 @@ public class DatabaseCompareService
 {
     private readonly DatabaseConfig _sourceConfig;
     private readonly DatabaseConfig _targetConfig;
+    
+    public bool IncludeOwner { get; set; } = false;
 
     public DatabaseCompareService(DatabaseConfig sourceConfig, DatabaseConfig targetConfig)
     {
@@ -55,7 +57,7 @@ public class DatabaseCompareService
     public virtual async Task<List<SchemaDiffResult>> GenerateSchemaDiffResultsAsync(string sourceSchema, string targetSchema)
     {
         var categoryResults = new Dictionary<string, List<SchemaDiffResult>> {
-            { "Extension", new() }, { "Role", new() }, { "Enum", new() }, { "Sequence", new() },
+            { "Extension", new() }, { "Role", new() }, { "Enum", new() }, { "Type", new() }, { "Sequence", new() },
             { "Table", new() }, { "View", new() }, { "Routine", new() }, { "Materialized View", new() },
             { "Index", new() }, { "Constraint", new() }, { "Trigger", new() }
         };
@@ -87,8 +89,12 @@ public class DatabaseCompareService
         var sourceSequences = await GetSequencesAsync(_sourceConfig, sourceSchema);
         var targetEnums = await GetEnumsAsync(_targetConfig, targetSchema);
         var sourceEnums = await GetEnumsAsync(_sourceConfig, sourceSchema);
+        var targetTypes = await GetCompositeTypesAsync(_targetConfig, targetSchema);
+        var sourceTypes = await GetCompositeTypesAsync(_sourceConfig, sourceSchema);
         var targetMatViews = await GetMaterializedViewsAsync(_targetConfig, targetSchema);
         var sourceMatViews = await GetMaterializedViewsAsync(_sourceConfig, sourceSchema);
+        var targetOwners = await GetObjectOwnersAsync(_targetConfig, targetSchema);
+        var sourceOwners = await GetObjectOwnersAsync(_sourceConfig, sourceSchema);
 
         // --- Category: Extension ---
         foreach (var ext in sourceExtensions.Keys.Except(targetExtensions.Keys))
@@ -105,8 +111,19 @@ public class DatabaseCompareService
         foreach (var name in sourceEnums.Keys.Except(targetEnums.Keys))
             categoryResults["Enum"].Add(new SchemaDiffResult { ObjectType = "Enum", ObjectName = name, DiffType = "Added", SourceDDL = sourceEnums[name], TargetDDL = "-- N/A", DiffScript = sourceEnums[name] });
 
+        // --- Category: Type (Composite Types) ---
+        // Define set of dropped tables to skip dependent indexes/triggers/constraints later
+        var removedTables = targetTables.Except(sourceTables).ToList();
+        var targetTableDeps = await GetTableDependenciesAsync(_targetConfig, targetSchema);
+        var sortedRemovedTables = SortTablesTopologically(removedTables, targetTableDeps);
+        sortedRemovedTables.Reverse(); // Drop child tables first
+        var droppedTablesSet = new HashSet<string>(sortedRemovedTables, StringComparer.OrdinalIgnoreCase);
+
+        // --- Category: Type (Composite Types) ---
+        await CompareGenericObjectsAsync(categoryResults["Type"], "Type", targetTypes, sourceTypes, targetSchema, sourceOwners, targetOwners, "t", droppedTablesSet);
+
         // --- Category: Sequence ---
-        await CompareGenericObjectsAsync(categoryResults["Sequence"], "Sequence", targetSequences, sourceSequences, targetSchema);
+        await CompareGenericObjectsAsync(categoryResults["Sequence"], "Sequence", targetSequences, sourceSequences, targetSchema, sourceOwners, targetOwners, "S", droppedTablesSet);
 
         // --- Category: Table ---
         var tableDeps = await GetTableDependenciesAsync(_sourceConfig, sourceSchema);
@@ -117,7 +134,18 @@ public class DatabaseCompareService
         {
             var cols = sourceCols.Where(c => c.TableName == table).ToList();
             var ddl = await BuildFullTableDdlAsync(_sourceConfig, sourceSchema, table, cols);
+            if (IncludeOwner && sourceOwners.TryGetValue($"r:{table}", out var owner))
+            {
+                ddl += GetOwnerDdl("r", table, owner, targetSchema);
+            }
             categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "Added", SourceDDL = ddl, TargetDDL = "-- Object does not exist in Target database", DiffScript = ddl });
+        }
+
+        foreach (var table in sortedRemovedTables)
+        {
+            var cols = targetCols.Where(c => c.TableName == table).ToList();
+            var ddl = await BuildFullTableDdlAsync(_targetConfig, targetSchema, table, cols);
+            categoryResults["Table"].Add(new SchemaDiffResult { ObjectType = "Table", ObjectName = table, DiffType = "ExistingInTarget", SourceDDL = ddl, TargetDDL = "-- N/A", DiffScript = $"DROP TABLE IF EXISTS {targetSchema}.\"{table}\" CASCADE;" });
         }
 
         var commonTables = targetTables.Intersect(sourceTables).ToList();
@@ -129,7 +157,7 @@ public class DatabaseCompareService
             
             // 1. New columns
             foreach (var col in sourceTableCols.Where(sc => !targetTableCols.Any(tc => tc.ColumnName == sc.ColumnName)))
-                diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {MapPostgresType(col.DataType)}{(col.CharacterMaximumLength != null ? $"({col.CharacterMaximumLength})" : "")};");
+                diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ADD COLUMN \"{col.ColumnName}\" {GetColumnTypeString(col)};");
             
             // 2. Removed columns
             foreach (var colName in targetTableCols.Select(tc => tc.ColumnName).Except(sourceTableCols.Select(sc => sc.ColumnName)))
@@ -140,13 +168,16 @@ public class DatabaseCompareService
             foreach (var sCol in commonCols)
             {
                 var tCol = targetTableCols.First(tc => tc.ColumnName == sCol.ColumnName);
-                bool typeChanged = sCol.DataType != tCol.DataType || sCol.CharacterMaximumLength != tCol.CharacterMaximumLength;
+                bool typeChanged = NormalizeTypeName(sCol.DataType) != NormalizeTypeName(tCol.DataType) 
+                                   || sCol.CharacterMaximumLength != tCol.CharacterMaximumLength
+                                   || sCol.NumericPrecision != tCol.NumericPrecision
+                                   || sCol.NumericScale != tCol.NumericScale;
                 bool nullChanged = sCol.IsNullable != tCol.IsNullable;
                 bool defaultChanged = (sCol.ColumnDefault ?? "") != (tCol.ColumnDefault ?? "");
 
                 if (typeChanged)
                 {
-                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" TYPE {MapPostgresType(sCol.DataType)}{(sCol.CharacterMaximumLength != null ? $"({sCol.CharacterMaximumLength})" : "")};");
+                    diff.AppendLine($"ALTER TABLE {targetSchema}.\"{table}\" ALTER COLUMN \"{sCol.ColumnName}\" TYPE {GetColumnTypeString(sCol)};");
                 }
                 
                 if (nullChanged)
@@ -166,8 +197,12 @@ public class DatabaseCompareService
                 }
             }
             
-            if (diff.Length > 0)
+            if (diff.Length > 0 || (IncludeOwner && sourceOwners.TryGetValue($"r:{table}", out var sOwner) && targetOwners.TryGetValue($"r:{table}", out var tOwner) && sOwner != tOwner))
             {
+                if (IncludeOwner && sourceOwners.TryGetValue($"r:{table}", out var sO) && targetOwners.TryGetValue($"r:{table}", out var tO) && sO != tO)
+                {
+                    diff.AppendLine(GetOwnerDdl("r", table, sO, targetSchema).Trim());
+                }
                 var sDdl = await BuildFullTableDdlAsync(_sourceConfig, sourceSchema, table, sourceTableCols);
                 var tDdl = await BuildFullTableDdlAsync(_targetConfig, targetSchema, table, targetTableCols);
 
@@ -182,46 +217,94 @@ public class DatabaseCompareService
         var addedViews = sourceViews.Keys.Except(targetViews.Keys);
         foreach (var v in addedViews) {
             string sourceDef = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".");
-            categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+            string diffScript = sourceDef;
+            if (IncludeOwner && sourceOwners.TryGetValue($"v:{v}", out var owner))
+                diffScript += GetOwnerDdl("v", v, owner, targetSchema);
+            categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
+        }
+        var removedViews = targetViews.Keys.Except(sourceViews.Keys);
+        foreach (var v in removedViews) {
+            categoryResults["View"].Add(new SchemaDiffResult { ObjectType = "View", ObjectName = v, DiffType = "ExistingInTarget", SourceDDL = targetViews[v], TargetDDL = "-- N/A", DiffScript = $"DROP VIEW IF EXISTS {targetSchema}.{v};" });
         }
         var commonViews = targetViews.Keys.Intersect(sourceViews.Keys);
         foreach (var v in commonViews) {
             string sourceDef = sourceViews[v].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetViews[v] != sourceDef) 
+            bool viewChanged = targetViews[v] != sourceDef;
+            string? sO = null;
+            bool ownerChanged = IncludeOwner && sourceOwners.TryGetValue($"v:{v}", out sO) && targetOwners.TryGetValue($"v:{v}", out var tO) && sO != tO;
+            if (viewChanged || ownerChanged) {
+                string diffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef}";
+                if (ownerChanged)
+                    diffScript += GetOwnerDdl("v", v, sO!, targetSchema);
                 categoryResults["View"].Add(new SchemaDiffResult { 
                     ObjectType = "View", ObjectName = v, DiffType = "Altered", 
                     SourceDDL = sourceDef, TargetDDL = targetViews[v],
-                    DiffScript = $"CREATE OR REPLACE VIEW {targetSchema}.{v} AS {sourceDef}" 
+                    DiffScript = diffScript
                 });
+            }
         }
 
         // --- Category: Routine ---
         var addedRoutines = sourceRoutines.Keys.Except(targetRoutines.Keys);
         foreach (var r in addedRoutines) {
             string sourceDef = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".");
-            categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+            string diffScript = sourceDef;
+            if (IncludeOwner && sourceOwners.TryGetValue($"f:{r}", out var owner))
+                diffScript += GetOwnerDdl("f", r, owner, targetSchema);
+            categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
+        }
+        var removedRoutines = targetRoutines.Keys.Except(sourceRoutines.Keys);
+        foreach (var r in removedRoutines) {
+            categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "ExistingInTarget", SourceDDL = targetRoutines[r], TargetDDL = "-- N/A", DiffScript = $"DROP FUNCTION IF EXISTS {targetSchema}.{r};" });
         }
         var commonRoutines = targetRoutines.Keys.Intersect(sourceRoutines.Keys);
         foreach (var r in commonRoutines) {
             string sourceDef = sourceRoutines[r].Replace(sourceSchema + ".", targetSchema + ".");
-            if (targetRoutines[r] != sourceDef)
-                categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", SourceDDL = sourceDef, TargetDDL = targetRoutines[r], DiffScript = sourceDef });
+            bool routineChanged = targetRoutines[r] != sourceDef;
+            string? sO = null;
+            bool ownerChanged = IncludeOwner && sourceOwners.TryGetValue($"f:{r}", out sO) && targetOwners.TryGetValue($"f:{r}", out var tO) && sO != tO;
+            if (routineChanged || ownerChanged) {
+                string diffScript = sourceDef;
+                if (ownerChanged)
+                    diffScript += GetOwnerDdl("f", r, sO!, targetSchema);
+                categoryResults["Routine"].Add(new SchemaDiffResult { ObjectType = "Routine", ObjectName = r, DiffType = "Altered", SourceDDL = sourceDef, TargetDDL = targetRoutines[r], DiffScript = diffScript });
+            }
         }
 
         // --- Category: Materialized View ---
         foreach (var name in sourceMatViews.Keys.Except(targetMatViews.Keys)) {
             string sourceDef = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".");
-            categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", SourceDDL = sourceDef, TargetDDL = "-- Object does not exist in Target database", DiffScript = sourceDef });
+            string diffScript = sourceDef;
+            if (IncludeOwner && sourceOwners.TryGetValue($"m:{name}", out var owner))
+                diffScript += GetOwnerDdl("m", name, owner, targetSchema);
+            categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
+        }
+        var removedMatViews = targetMatViews.Keys.Except(sourceMatViews.Keys);
+        foreach (var name in removedMatViews) {
+            categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = targetMatViews[name], TargetDDL = "-- N/A", DiffScript = $"DROP MATERIALIZED VIEW IF EXISTS {targetSchema}.{name};" });
+        }
+        var commonMatViews = targetMatViews.Keys.Intersect(sourceMatViews.Keys);
+        foreach (var name in commonMatViews) {
+            string sourceDef = sourceMatViews[name].Replace(sourceSchema + ".", targetSchema + ".");
+            bool viewChanged = targetMatViews[name] != sourceDef;
+            string? sO = null;
+            bool ownerChanged = IncludeOwner && sourceOwners.TryGetValue($"m:{name}", out sO) && targetOwners.TryGetValue($"m:{name}", out var tO) && sO != tO;
+            if (viewChanged || ownerChanged) {
+                string diffScript = $"DROP MATERIALIZED VIEW IF EXISTS {targetSchema}.{name};\n{sourceDef}";
+                if (ownerChanged)
+                    diffScript += GetOwnerDdl("m", name, sO!, targetSchema);
+                categoryResults["Materialized View"].Add(new SchemaDiffResult { ObjectType = "Materialized View", ObjectName = name, DiffType = "Altered", SourceDDL = sourceDef, TargetDDL = targetMatViews[name], DiffScript = diffScript });
+            }
         }
 
         // --- Categories: Index, Constraint, Trigger ---
-        await CompareGenericObjectsAsync(categoryResults["Index"], "Index", targetIndexes, sourceIndexes, targetSchema);
-        await CompareGenericObjectsAsync(categoryResults["Trigger"], "Trigger", targetTriggers, sourceTriggers, targetSchema);
-        await CompareGenericObjectsAsync(categoryResults["Constraint"], "Constraint", targetConstraints, sourceConstraints, targetSchema);
+        await CompareGenericObjectsAsync(categoryResults["Index"], "Index", targetIndexes, sourceIndexes, targetSchema, droppedTables: droppedTablesSet);
+        await CompareGenericObjectsAsync(categoryResults["Trigger"], "Trigger", targetTriggers, sourceTriggers, targetSchema, droppedTables: droppedTablesSet);
+        await CompareGenericObjectsAsync(categoryResults["Constraint"], "Constraint", targetConstraints, sourceConstraints, targetSchema, droppedTables: droppedTablesSet);
 
         // Combine all in logical order
         var finalResults = new List<SchemaDiffResult>();
-        string[] order = { "Extension", "Role", "Enum", "Sequence", "Table", "View", "Routine", "Materialized View", "Index", "Constraint", "Trigger" };
+        string[] order = { "Extension", "Role", "Enum", "Type", "Sequence", "Table", "View", "Routine", "Materialized View", "Index", "Constraint", "Trigger" };
         foreach (var cat in order) finalResults.AddRange(categoryResults[cat]);
         
         return finalResults;
@@ -229,15 +312,50 @@ public class DatabaseCompareService
 
     internal string MapPostgresType(string type)
     {
-        return type.ToLower() switch
+        if (string.IsNullOrEmpty(type)) return "";
+        return type.ToLower().Trim() switch
         {
-            "integer" => "int4",
-            "bigint" => "int8",
-            "boolean" => "bool",
-            "character varying" => "varchar",
-            "timestamp without time zone" => "timestamp",
+            "varchar" => "character varying",
+            "int4" => "integer",
+            "int8" => "bigint",
+            "bool" => "boolean",
+            "timestamp" => "timestamp without time zone",
             _ => type
         };
+    }
+
+    private string NormalizeTypeName(string type)
+    {
+        if (string.IsNullOrEmpty(type)) return "";
+        return type.ToLower().Trim() switch
+        {
+            "varchar" => "character varying",
+            "int4" => "integer",
+            "int" => "integer",
+            "int8" => "bigint",
+            "bool" => "boolean",
+            "timestamp" => "timestamp without time zone",
+            "numeric" => "numeric",
+            "decimal" => "numeric",
+            _ => type.ToLower().Trim()
+        };
+    }
+
+    private string GetColumnTypeString(ColumnInfo col)
+    {
+        string typeStr = MapPostgresType(col.DataType);
+        if (col.CharacterMaximumLength != null)
+        {
+            typeStr += $"({col.CharacterMaximumLength})";
+        }
+        else if (col.NumericPrecision != null && NormalizeTypeName(col.DataType) == "numeric")
+        {
+            if (col.NumericScale != null)
+                typeStr += $"({col.NumericPrecision},{col.NumericScale})";
+            else
+                typeStr += $"({col.NumericPrecision})";
+        }
+        return typeStr;
     }
 
     private async Task<string> BuildFullTableDdlAsync(DatabaseConfig config, string schema, string table, List<ColumnInfo> cols)
@@ -249,8 +367,7 @@ public class DatabaseCompareService
         foreach (var c in cols)
         {
             // Simplified names without quotes as per user sample
-            var def = $"    {c.ColumnName} {MapPostgresType(c.DataType)}";
-            if (c.CharacterMaximumLength != null) def += $"({c.CharacterMaximumLength})";
+            var def = $"    {c.ColumnName} {GetColumnTypeString(c)}";
             if (!string.IsNullOrEmpty(c.ColumnDefault)) def += $" DEFAULT {c.ColumnDefault}";
             def += (c.IsNullable == "NO" ? " NOT NULL" : " NULL");
             lines.Add(def);
@@ -276,20 +393,84 @@ public class DatabaseCompareService
         return sb.ToString();
     }
 
-    private async Task CompareGenericObjectsAsync(List<SchemaDiffResult> results, string type, Dictionary<string, string> oldObjs, Dictionary<string, string> newObjs, string targetSchema)
+    private async Task CompareGenericObjectsAsync(List<SchemaDiffResult> results, string type, Dictionary<string, string> oldObjs, Dictionary<string, string> newObjs, string targetSchema, Dictionary<string, string>? sourceOwners = null, Dictionary<string, string>? targetOwners = null, string? kind = null, HashSet<string>? droppedTables = null)
     {
         var added = newObjs.Keys.Except(oldObjs.Keys);
         foreach (var name in added) {
-            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Added", SourceDDL = newObjs[name], TargetDDL = "-- Object does not exist in Target database", DiffScript = newObjs[name] });
+            string diffScript = newObjs[name];
+            if (IncludeOwner && sourceOwners != null && kind != null && sourceOwners.TryGetValue($"{kind}:{name}", out var owner))
+            {
+                diffScript += GetOwnerDdl(kind, name, owner, targetSchema);
+            }
+            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
         }
         var removed = oldObjs.Keys.Except(newObjs.Keys);
         foreach (var name in removed) {
-            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = oldObjs[name], TargetDDL = "-- N/A", DiffScript = $"-- {type} \"{name}\" was removed from Source. To remove from Target, run manually: DROP {type.ToUpper()} IF EXISTS {name};" });
+            // Extract table name from the object definition to check if its parent table is dropped
+            string parentTable = "";
+            string def = oldObjs[name];
+            
+            if (type == "Index" || type == "Trigger") {
+                var match = System.Text.RegularExpressions.Regex.Match(def, @"\bON\s+(?:[a-zA-Z0-9_""\.]+\.)?""?([a-zA-Z0-9_]+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success) {
+                    parentTable = match.Groups[1].Value;
+                }
+            } else if (type == "Constraint") {
+                var match = System.Text.RegularExpressions.Regex.Match(def, @"ALTER TABLE\s+(?:[a-zA-Z0-9_""\.]+\.)?""?([a-zA-Z0-9_]+)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success) {
+                    parentTable = match.Groups[1].Value;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(parentTable) && droppedTables != null && droppedTables.Contains(parentTable)) {
+                // Skip outputting drop statement for this dependent object since its parent table is being dropped with CASCADE
+                continue;
+            }
+
+            string dropScript = "";
+            if (type == "Constraint") {
+                var match = System.Text.RegularExpressions.Regex.Match(oldObjs[name], @"ALTER TABLE\s+(\S+)\s+ADD CONSTRAINT", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success) {
+                    string tableName = match.Groups[1].Value;
+                    dropScript = $"ALTER TABLE {tableName} DROP CONSTRAINT IF EXISTS \"{name}\";";
+                } else {
+                    dropScript = $"-- Constraint \"{name}\" was removed from Source. Could not detect table to drop automatically.";
+                }
+            } else if (type == "Trigger") {
+                var match = System.Text.RegularExpressions.Regex.Match(oldObjs[name], @"\bON\s+(\S+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success) {
+                    string tableName = match.Groups[1].Value;
+                    dropScript = $"DROP TRIGGER IF EXISTS \"{name}\" ON {tableName};";
+                } else {
+                    dropScript = $"-- Trigger \"{name}\" was removed from Source. Could not detect table to drop automatically.";
+                }
+            } else if (type == "Index") {
+                dropScript = $"DROP INDEX IF EXISTS {targetSchema}.\"{name}\";";
+            } else if (type == "Sequence") {
+                dropScript = $"DROP SEQUENCE IF EXISTS {targetSchema}.\"{name}\" CASCADE;";
+            } else if (type == "Enum" || type == "Type") {
+                dropScript = $"DROP TYPE IF EXISTS {targetSchema}.\"{name}\" CASCADE;";
+            } else {
+                dropScript = $"DROP {type.ToUpper()} IF EXISTS {name};";
+            }
+            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = oldObjs[name], TargetDDL = "-- N/A", DiffScript = dropScript });
         }
         var common = oldObjs.Keys.Intersect(newObjs.Keys);
         foreach (var name in common) {
-            if (oldObjs[name] != newObjs[name]) {
-                results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Altered", SourceDDL = oldObjs[name], TargetDDL = newObjs[name], DiffScript = newObjs[name] });
+            bool bodyChanged = oldObjs[name] != newObjs[name];
+            bool ownerChanged = IncludeOwner && sourceOwners != null && targetOwners != null && kind != null 
+                                && sourceOwners.TryGetValue($"{kind}:{name}", out var sOwner) 
+                                && targetOwners.TryGetValue($"{kind}:{name}", out var tOwner) 
+                                && sOwner != tOwner;
+            
+            if (bodyChanged || ownerChanged) {
+                string diffScript = newObjs[name];
+                if (ownerChanged)
+                {
+                    sourceOwners.TryGetValue($"{kind}:{name}", out var sO);
+                    diffScript += GetOwnerDdl(kind, name, sO!, targetSchema);
+                }
+                results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Altered", SourceDDL = diffScript, TargetDDL = oldObjs[name], DiffScript = diffScript });
             }
         }
     }
@@ -300,10 +481,11 @@ public class DatabaseCompareService
         var sb = new StringBuilder();
         sb.AppendLine($"-- Schema update script from {_sourceConfig.DatabaseName} to {_targetConfig.DatabaseName} (Source Schema: {sourceSchema}, Target Schema: {targetSchema})");
         sb.AppendLine($"-- Generated at {DateTime.Now}\n");
+        sb.AppendLine("BEGIN;\n");
         foreach(var r in results) {
-            sb.AppendLine($"-- {r.ObjectType}: {r.ObjectName} ({r.DiffType})");
             sb.AppendLine(r.DiffScript);
         }
+        sb.AppendLine("COMMIT;");
         return sb.ToString();
     }
 
@@ -558,7 +740,7 @@ public class DatabaseCompareService
         await conn.OpenAsync();
 
         var sql = @"
-            SELECT c.table_name, c.column_name, c.data_type, c.character_maximum_length, c.is_nullable, c.column_default
+            SELECT c.table_name, c.column_name, c.data_type, c.character_maximum_length, c.is_nullable, c.column_default, c.numeric_precision, c.numeric_scale
             FROM information_schema.columns c
             JOIN information_schema.tables t ON c.table_name = t.table_name AND c.table_schema = t.table_schema
             WHERE c.table_schema = $1 AND t.table_type = 'BASE TABLE'
@@ -576,7 +758,9 @@ public class DatabaseCompareService
                 DataType = reader.GetString(2),
                 CharacterMaximumLength = reader.IsDBNull(3) ? (int?)null : reader.GetInt32(3),
                 IsNullable = reader.GetString(4),
-                ColumnDefault = reader.IsDBNull(5) ? "" : reader.GetString(5)
+                ColumnDefault = reader.IsDBNull(5) ? "" : reader.GetString(5),
+                NumericPrecision = reader.IsDBNull(6) ? (int?)null : reader.GetInt32(6),
+                NumericScale = reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7)
             });
         }
         return cols;
@@ -693,7 +877,7 @@ public class DatabaseCompareService
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
-            routines[reader.GetString(0)] = reader.GetString(1);
+            routines[reader.GetString(0)] = reader.GetString(1) + ";";
         }
         return routines;
     }
@@ -703,7 +887,18 @@ public class DatabaseCompareService
         var dict = new Dictionary<string, string>();
         await using var conn = new NpgsqlConnection(config.GetConnectionString());
         await conn.OpenAsync();
-        var sql = "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1;";
+        var sql = @"
+            SELECT 
+                i.relname AS indexname,
+                pg_get_indexdef(i.oid) || ';' AS indexdef
+            FROM pg_index x
+            JOIN pg_class c ON c.oid = x.indrelid
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_constraint con ON con.conindid = i.oid
+            WHERE n.nspname = $1 
+              AND con.oid IS NULL
+              AND NOT x.indisprimary;";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -837,6 +1032,7 @@ public class DatabaseCompareService
             JOIN pg_enum e ON t.oid = e.enumtypid
             JOIN pg_namespace n ON n.oid = t.typnamespace
             WHERE n.nspname = $1
+              AND t.typtype = 'e'
             GROUP BY t.typname;";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
@@ -846,6 +1042,53 @@ public class DatabaseCompareService
             var name = reader.GetString(0);
             var vals = reader.GetString(1);
             dict[name] = $"CREATE TYPE {schemaName}.\"{name}\" AS ENUM ({vals});";
+        }
+        return dict;
+    }
+
+    private async Task<Dictionary<string, string>> GetCompositeTypesAsync(DatabaseConfig config, string schemaName)
+    {
+        var dict = new Dictionary<string, string>();
+        await using var conn = new NpgsqlConnection(config.GetConnectionString());
+        await conn.OpenAsync();
+        var sql = @"
+            SELECT
+                t.typname AS type_name,
+                a.attname AS attribute_name,
+                pg_catalog.format_type(a.atttypid, a.atttypmod) AS attribute_type
+            FROM pg_type t
+            JOIN pg_class c ON t.typrelid = c.oid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+            WHERE c.relkind = 'c'
+              AND n.nspname = $1
+            ORDER BY t.typname, a.attnum;";
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue(schemaName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        
+        var typeFields = new Dictionary<string, List<string>>();
+        while (await reader.ReadAsync())
+        {
+            var typeName = reader.GetString(0);
+            if (!typeFields.ContainsKey(typeName))
+            {
+                typeFields[typeName] = new List<string>();
+            }
+            if (!reader.IsDBNull(1))
+            {
+                var attrName = reader.GetString(1);
+                var attrType = reader.GetString(2);
+                // Map the Postgres type of composite type attributes to standard names as well
+                typeFields[typeName].Add($"    \"{attrName}\" {MapPostgresType(attrType)}");
+            }
+        }
+
+        foreach (var kvp in typeFields)
+        {
+            var typeName = kvp.Key;
+            var fields = string.Join(",\n", kvp.Value);
+            dict[typeName] = $"CREATE TYPE {schemaName}.\"{typeName}\" AS (\n{fields}\n);";
         }
         return dict;
     }
@@ -921,6 +1164,104 @@ public class DatabaseCompareService
         return sorted;
     }
 
+    private async Task<Dictionary<string, string>> GetObjectOwnersAsync(DatabaseConfig config, string schemaName)
+    {
+        var owners = new Dictionary<string, string>();
+        if (!IncludeOwner) return owners;
+        
+        try
+        {
+            await using var conn = new NpgsqlConnection(config.GetConnectionString());
+            await conn.OpenAsync();
+
+            // 1. Tables & Views & Materialized Views & Sequences owners
+            var sqlClass = @"
+                SELECT 
+                    c.relname AS name,
+                    r.rolname AS owner,
+                    c.relkind::text
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                JOIN pg_roles r ON c.relowner = r.oid
+                WHERE n.nspname = $1 AND c.relkind IN ('r', 'v', 'm', 'S');";
+            await using (var cmd = new NpgsqlCommand(sqlClass, conn))
+            {
+                cmd.Parameters.AddWithValue(schemaName);
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var name = reader.GetString(0);
+                    var owner = reader.GetString(1);
+                    var kind = reader.GetString(2);
+                    string key = $"{kind}:{name}";
+                    owners[key] = owner;
+                }
+            }
+
+            // 2. Routines (Functions/Procedures) owners
+            var sqlProc = @"
+                SELECT 
+                    p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS signature, 
+                    r.rolname AS owner
+                FROM pg_proc p
+                JOIN pg_namespace n ON p.pronamespace = n.oid
+                JOIN pg_roles r ON p.proowner = r.oid
+                WHERE n.nspname = $1;";
+            await using (var cmd = new NpgsqlCommand(sqlProc, conn))
+            {
+                cmd.Parameters.AddWithValue(schemaName);
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var sig = reader.GetString(0);
+                    var owner = reader.GetString(1);
+                    owners[$"f:{sig}"] = owner;
+                }
+            }
+
+            // 3. Composite Types owners
+            var sqlType = @"
+                SELECT 
+                    t.typname AS name, 
+                    r.rolname AS owner
+                FROM pg_type t
+                JOIN pg_namespace n ON t.typnamespace = n.oid
+                JOIN pg_roles r ON t.typowner = r.oid
+                WHERE n.nspname = $1;";
+            await using (var cmd = new NpgsqlCommand(sqlType, conn))
+            {
+                cmd.Parameters.AddWithValue(schemaName);
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var name = reader.GetString(0);
+                    var owner = reader.GetString(1);
+                    owners[$"t:{name}"] = owner;
+                }
+            }
+        }
+        catch
+        {
+            // Ignore
+        }
+
+        return owners;
+    }
+
+    private string GetOwnerDdl(string kind, string objectName, string owner, string schemaName)
+    {
+        return kind switch
+        {
+            "r" => $"\nALTER TABLE IF EXISTS {schemaName}.\"{objectName}\" OWNER TO \"{owner}\";",
+            "v" => $"\nALTER VIEW IF EXISTS {schemaName}.\"{objectName}\" OWNER TO \"{owner}\";",
+            "m" => $"\nALTER TABLE IF EXISTS {schemaName}.\"{objectName}\" OWNER TO \"{owner}\";", 
+            "S" => $"\nALTER SEQUENCE IF EXISTS {schemaName}.\"{objectName}\" OWNER TO \"{owner}\";",
+            "f" => $"\nALTER FUNCTION {schemaName}.{objectName} OWNER TO \"{owner}\";", 
+            "t" => $"\nALTER TYPE {schemaName}.\"{objectName}\" OWNER TO \"{owner}\";",
+            _ => ""
+        };
+    }
+
     private class ColumnInfo
     {
         public string TableName { get; set; } = "";
@@ -929,5 +1270,7 @@ public class DatabaseCompareService
         public int? CharacterMaximumLength { get; set; }
         public string IsNullable { get; set; } = "";
         public string ColumnDefault { get; set; } = "";
+        public int? NumericPrecision { get; set; }
+        public int? NumericScale { get; set; }
     }
 }
