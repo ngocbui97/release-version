@@ -10,6 +10,8 @@ public class DataDiffSummary
     public int InsertedCount { get; set; }
     public int DeletedCount { get; set; }
     public int UpdatedCount { get; set; }
+    public int SourceRowCount { get; set; }
+    public int TargetRowCount { get; set; }
     public bool HasDifferences => InsertedCount > 0 || DeletedCount > 0 || UpdatedCount > 0;
 }
 
@@ -35,6 +37,7 @@ public class DatabaseCompareService
     private readonly DatabaseConfig _targetConfig;
     
     public bool IncludeOwner { get; set; } = false;
+    public bool IgnoreExtension { get; set; } = true;
 
     public DatabaseCompareService(DatabaseConfig sourceConfig, DatabaseConfig targetConfig)
     {
@@ -97,11 +100,14 @@ public class DatabaseCompareService
         var sourceOwners = await GetObjectOwnersAsync(_sourceConfig, sourceSchema);
 
         // --- Category: Extension ---
-        foreach (var ext in sourceExtensions.Keys.Except(targetExtensions.Keys))
-            categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Added", SourceDDL = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';", TargetDDL = "-- N/A", DiffScript = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';" });
-        foreach (var ext in targetExtensions.Keys.Intersect(sourceExtensions.Keys))
-            if (targetExtensions[ext] != sourceExtensions[ext])
-                categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Altered", SourceDDL = $"VERSION '{sourceExtensions[ext]}'", TargetDDL = $"VERSION '{targetExtensions[ext]}'", DiffScript = $"ALTER EXTENSION \"{ext}\" UPDATE TO '{sourceExtensions[ext]}';" });
+        if (!IgnoreExtension)
+        {
+            foreach (var ext in sourceExtensions.Keys.Except(targetExtensions.Keys))
+                categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Added", SourceDDL = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';", TargetDDL = "-- N/A", DiffScript = $"CREATE EXTENSION IF NOT EXISTS \"{ext}\" VERSION '{sourceExtensions[ext]}';" });
+            foreach (var ext in targetExtensions.Keys.Intersect(sourceExtensions.Keys))
+                if (targetExtensions[ext] != sourceExtensions[ext])
+                    categoryResults["Extension"].Add(new SchemaDiffResult { ObjectType = "Extension", ObjectName = ext, DiffType = "Altered", SourceDDL = $"VERSION '{sourceExtensions[ext]}'", TargetDDL = $"VERSION '{targetExtensions[ext]}'", DiffScript = $"ALTER EXTENSION \"{ext}\" UPDATE TO '{sourceExtensions[ext]}';" });
+        }
 
         // --- Category: Role ---
         foreach (var role in sourceRoles.Keys.Except(targetRoles.Keys))
@@ -208,7 +214,7 @@ public class DatabaseCompareService
 
                 categoryResults["Table"].Add(new SchemaDiffResult { 
                     ObjectType = "Table", ObjectName = table, DiffType = "Altered", 
-                    SourceDDL = sDdl, TargetDDL = tDdl, DiffScript = diff.ToString() 
+                    SourceDDL = sDdl, TargetDDL = tDdl, DiffScript = diff.ToString().Trim() 
                 });
             }
         }
@@ -402,7 +408,13 @@ public class DatabaseCompareService
             {
                 diffScript += GetOwnerDdl(kind, name, owner, targetSchema);
             }
-            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
+            string displayName = name;
+            if (type == "Constraint" && name.Contains(":"))
+            {
+                var parts = name.Split(':');
+                displayName = $"{parts[1]} [{parts[0]}]";
+            }
+            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = displayName, DiffType = "Added", SourceDDL = diffScript, TargetDDL = "-- Object does not exist in Target database", DiffScript = diffScript });
         }
         var removed = oldObjs.Keys.Except(newObjs.Keys);
         foreach (var name in removed) {
@@ -428,13 +440,21 @@ public class DatabaseCompareService
             }
 
             string dropScript = "";
+            string displayName = name;
             if (type == "Constraint") {
+                string constraintName = name;
+                if (name.Contains(":"))
+                {
+                    var parts = name.Split(':');
+                    constraintName = parts[1];
+                    displayName = $"{parts[1]} [{parts[0]}]";
+                }
                 var match = System.Text.RegularExpressions.Regex.Match(oldObjs[name], @"ALTER TABLE\s+(\S+)\s+ADD CONSTRAINT", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (match.Success) {
                     string tableName = match.Groups[1].Value;
-                    dropScript = $"ALTER TABLE {tableName} DROP CONSTRAINT IF EXISTS \"{name}\";";
+                    dropScript = $"ALTER TABLE {tableName} DROP CONSTRAINT IF EXISTS \"{constraintName}\";";
                 } else {
-                    dropScript = $"-- Constraint \"{name}\" was removed from Source. Could not detect table to drop automatically.";
+                    dropScript = $"-- Constraint \"{constraintName}\" was removed from Source. Could not detect table to drop automatically.";
                 }
             } else if (type == "Trigger") {
                 var match = System.Text.RegularExpressions.Regex.Match(oldObjs[name], @"\bON\s+(\S+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -453,7 +473,7 @@ public class DatabaseCompareService
             } else {
                 dropScript = $"DROP {type.ToUpper()} IF EXISTS {name};";
             }
-            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "ExistingInTarget", SourceDDL = oldObjs[name], TargetDDL = "-- N/A", DiffScript = dropScript });
+            results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = displayName, DiffType = "ExistingInTarget", SourceDDL = oldObjs[name], TargetDDL = "-- N/A", DiffScript = dropScript });
         }
         var common = oldObjs.Keys.Intersect(newObjs.Keys);
         foreach (var name in common) {
@@ -470,7 +490,13 @@ public class DatabaseCompareService
                     sourceOwners.TryGetValue($"{kind}:{name}", out var sO);
                     diffScript += GetOwnerDdl(kind, name, sO!, targetSchema);
                 }
-                results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = name, DiffType = "Altered", SourceDDL = diffScript, TargetDDL = oldObjs[name], DiffScript = diffScript });
+                string displayName = name;
+                if (type == "Constraint" && name.Contains(":"))
+                {
+                    var parts = name.Split(':');
+                    displayName = $"{parts[1]} [{parts[0]}]";
+                }
+                results.Add(new SchemaDiffResult { ObjectType = type, ObjectName = displayName, DiffType = "Altered", SourceDDL = diffScript, TargetDDL = oldObjs[name], DiffScript = diffScript });
             }
         }
     }
@@ -611,6 +637,8 @@ public class DatabaseCompareService
 
         summary.InsertedCount = newKeys.Except(oldKeys).Count();
         summary.DeletedCount = oldKeys.Except(newKeys).Count();
+        summary.SourceRowCount = newData.Count;
+        summary.TargetRowCount = oldData.Count;
 
         var commonKeys = oldKeys.Intersect(newKeys).ToList();
         foreach (var key in commonKeys)
@@ -718,6 +746,7 @@ public class DatabaseCompareService
     {
         if (value == null || value is DBNull) return "NULL";
         if (value is string s) return $"'{s.Replace("'", "''")}'";
+        if (value is Guid g) return $"'{g}'";
         if (value is DateTime dt) return $"'{dt:yyyy-MM-dd HH:mm:ss.fff}'";
         if (value is bool b) return b ? "TRUE" : "FALSE";
         if (value is System.Collections.IEnumerable && !(value is string))
@@ -725,12 +754,21 @@ public class DatabaseCompareService
             // Handle arrays (simplified)
             return $"'{{{string.Join(",", ((System.Collections.IEnumerable)value).Cast<object>().Select(v => v.ToString() ?? ""))}}}'";
         }
+        
+        // Check if value is a numeric type
+        if (value is int || value is long || value is short || value is byte ||
+            value is float || value is double || value is decimal ||
+            value is uint || value is ulong || value is ushort)
+        {
+            return value.ToString() ?? "";
+        }
+
         // Handle potential JSONB (if string looks like JSON)
         var str = value.ToString() ?? "";
         if ((str.StartsWith("{") && str.EndsWith("}")) || (str.StartsWith("[") && str.EndsWith("]")))
             return $"'{str.Replace("'", "''")}'::jsonb";
             
-        return str;
+        return $"'{str.Replace("'", "''")}'";
     }
 
     private async Task<List<ColumnInfo>> GetColumnsAsync(DatabaseConfig config, string schemaName)
@@ -743,7 +781,15 @@ public class DatabaseCompareService
             SELECT c.table_name, c.column_name, c.data_type, c.character_maximum_length, c.is_nullable, c.column_default, c.numeric_precision, c.numeric_scale
             FROM information_schema.columns c
             JOIN information_schema.tables t ON c.table_name = t.table_name AND c.table_schema = t.table_schema
-            WHERE c.table_schema = $1 AND t.table_type = 'BASE TABLE'
+            JOIN pg_class tc ON tc.relname = t.table_name
+            JOIN pg_namespace n ON n.oid = tc.relnamespace AND n.nspname = t.table_schema
+            WHERE c.table_schema = $1 AND t.table_type = 'BASE TABLE'" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_class'::regclass 
+                    AND d.objid = tc.oid 
+                    AND d.deptype = 'e'
+              )" : "") + @"
             ORDER BY c.table_name, c.ordinal_position;";
 
         await using var cmd = new NpgsqlCommand(sql, conn);
@@ -847,7 +893,18 @@ public class DatabaseCompareService
         var views = new Dictionary<string, string>();
         await using var conn = new NpgsqlConnection(config.GetConnectionString());
         await conn.OpenAsync();
-        var sql = "SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = $1;";
+        var sql = @"
+            SELECT v.table_name, v.view_definition 
+            FROM information_schema.views v
+            JOIN pg_class c ON c.relname = v.table_name
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.table_schema
+            WHERE v.table_schema = $1" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_class'::regclass 
+                    AND d.objid = c.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -871,7 +928,13 @@ public class DatabaseCompareService
                    pg_get_functiondef(p.oid)
             FROM pg_proc p
             JOIN pg_namespace n ON p.pronamespace = n.oid
-            WHERE n.nspname = $1;";
+            WHERE n.nspname = $1" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_proc'::regclass 
+                    AND d.objid = p.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -898,7 +961,13 @@ public class DatabaseCompareService
             LEFT JOIN pg_constraint con ON con.conindid = i.oid
             WHERE n.nspname = $1 
               AND con.oid IS NULL
-              AND NOT x.indisprimary;";
+              AND NOT x.indisprimary" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_class'::regclass 
+                    AND d.objid = i.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -916,7 +985,13 @@ public class DatabaseCompareService
             FROM pg_trigger t
             JOIN pg_class c ON t.tgrelid = c.oid
             JOIN pg_namespace n ON c.relnamespace = n.oid
-            WHERE n.nspname = $1 AND NOT t.tgisinternal;";
+            WHERE n.nspname = $1 AND NOT t.tgisinternal" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_trigger'::regclass 
+                    AND d.objid = t.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -934,7 +1009,13 @@ public class DatabaseCompareService
             FROM pg_constraint c
             JOIN pg_namespace n ON c.connamespace = n.oid
             JOIN pg_class r ON c.conrelid = r.oid
-            WHERE n.nspname = $1 AND c.contype IN ('f', 'u', 'c');";
+            WHERE n.nspname = $1 AND c.contype IN ('f', 'u', 'c')" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_constraint'::regclass 
+                    AND d.objid = c.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -943,7 +1024,7 @@ public class DatabaseCompareService
             var conname = reader.GetString(0);
             var def = reader.GetString(1);
             var relname = reader.GetString(2);
-            dict[conname] = $"ALTER TABLE {schemaName}.{relname} ADD CONSTRAINT {conname} {def};";
+            dict[$"{relname}:{conname}"] = $"ALTER TABLE {schemaName}.{relname} ADD CONSTRAINT {conname} {def};";
         }
         return dict;
     }
@@ -1000,7 +1081,13 @@ public class DatabaseCompareService
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             JOIN pg_sequence s ON s.seqrelid = c.oid
-            WHERE c.relkind = 'S' AND n.nspname = $1;";
+            WHERE c.relkind = 'S' AND n.nspname = $1" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_class'::regclass 
+                    AND d.objid = c.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();
@@ -1032,7 +1119,13 @@ public class DatabaseCompareService
             JOIN pg_enum e ON t.oid = e.enumtypid
             JOIN pg_namespace n ON n.oid = t.typnamespace
             WHERE n.nspname = $1
-              AND t.typtype = 'e'
+              AND t.typtype = 'e'" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_type'::regclass 
+                    AND d.objid = t.oid 
+                    AND d.deptype = 'e'
+              )" : "") + @"
             GROUP BY t.typname;";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
@@ -1061,7 +1154,13 @@ public class DatabaseCompareService
             JOIN pg_namespace n ON n.oid = t.typnamespace
             LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
             WHERE c.relkind = 'c'
-              AND n.nspname = $1
+              AND n.nspname = $1" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_type'::regclass 
+                    AND d.objid = t.oid 
+                    AND d.deptype = 'e'
+              )" : "") + @"
             ORDER BY t.typname, a.attnum;";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
@@ -1098,7 +1197,18 @@ public class DatabaseCompareService
         var dict = new Dictionary<string, string>();
         await using var conn = new NpgsqlConnection(config.GetConnectionString());
         await conn.OpenAsync();
-        var sql = "SELECT matviewname, definition FROM pg_matviews WHERE schemaname = $1;";
+        var sql = @"
+            SELECT matviewname, definition 
+            FROM pg_matviews mv
+            JOIN pg_class c ON c.relname = mv.matviewname
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = mv.schemaname
+            WHERE mv.schemaname = $1" + (IgnoreExtension ? @"
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend d 
+                  WHERE d.classid = 'pg_class'::regclass 
+                    AND d.objid = c.oid 
+                    AND d.deptype = 'e'
+              )" : "") + ";";
         await using var cmd = new NpgsqlCommand(sql, conn);
         cmd.Parameters.AddWithValue(schemaName);
         await using var reader = await cmd.ExecuteReaderAsync();

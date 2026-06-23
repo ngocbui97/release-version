@@ -773,7 +773,7 @@ public class PostgresService
         await RunPostgresToolAsync("psql", $"-h {_config.Host} -p {_config.Port} -U {_config.Username} -d {dbName} -f \"{scriptPath}\" -v ON_ERROR_STOP=1", onOutput, cancellationToken);
     }
 
-    public virtual async Task ExecuteSqlWithTransactionAsync(string sql)
+    public virtual async Task ExecuteSqlWithTransactionAsync(string sql, bool rollbackOnSuccess = false)
     {
         await using var conn = new NpgsqlConnection(_config.GetConnectionString());
         await conn.OpenAsync();
@@ -782,7 +782,14 @@ public class PostgresService
         {
             await using var cmd = new NpgsqlCommand(sql, conn, transaction);
             await cmd.ExecuteNonQueryAsync();
-            await transaction.CommitAsync();
+            if (rollbackOnSuccess)
+            {
+                await transaction.RollbackAsync();
+            }
+            else
+            {
+                await transaction.CommitAsync();
+            }
         }
         catch { await transaction.RollbackAsync(); throw; }
     }

@@ -57,6 +57,7 @@ namespace ReleasePrepTool.UI
 
         // Tab 4: Sync & Execute DB
         private Button btnExecuteSchema = null!, btnExecuteData = null!;
+        private CheckBox chkDryRun = null!;
         private TextBox txtExecuteLog = null!, txtFinalExportLog = null!, txtBackupLog = null!, txtConfigDiffLog = null!, txtAiReviewLog = null!;
         private readonly List<string> _restoreLogLines = new List<string>();
         private TextBox txtLogFilter = null!;
@@ -69,13 +70,14 @@ namespace ReleasePrepTool.UI
         private Label lblAiKeyReadiness = null!, lblAiSchemaReadiness = null!, lblAiDataReadiness = null!, lblAiConfigReadiness = null!;
         private List<SchemaDiffResult> _schemaDiffs = new List<SchemaDiffResult>();
         private Label lblSourceDdlHeader = null!, lblTargetDdlHeader = null!;
+        private Label lblSourceDataDbTitle = null!, lblTargetDataDbTitle = null!;
         private ProgressBar pbDataLoading = null!;
         private Button btnRefreshTables = null!;
         
         // Tab 6: Compare Config
         private TextBox txtOldConfigPath = null!, txtNewConfigPath = null!;
         private Button btnSelectOldConfig = null!, btnSelectNewConfig = null!, btnCompareConfig = null!;    
-        private CheckBox chkTuningSchema = null!, chkTuningData = null!, chkIncludeOwner = null!;
+        private CheckBox chkTuningSchema = null!, chkTuningData = null!, chkIncludeOwner = null!, chkIgnoreExtension = null!;
         private RadioButton rbCompareFile = null!, rbCompareFolder = null!;
 
         // Tab 7: Final Export + Tab 8: AI Review
@@ -1525,6 +1527,9 @@ namespace ReleasePrepTool.UI
 
             chkIncludeOwner = new CheckBox { Text = "Include OWNER TO", AutoSize = true, Location = new Point(12, 20), Checked = false, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
             tooltip.SetToolTip(chkIncludeOwner, "Include ALTER ... OWNER TO statements in generated script and compare schema owner differences.");
+            
+            chkIgnoreExtension = new CheckBox { Text = "Ignore Extension Objects", AutoSize = true, Location = new Point(12, 20), Checked = true, Font = new Font(UIConstants.MainFontName, 8.5f), ForeColor = UIConstants.TextSecondary };
+            tooltip.SetToolTip(chkIgnoreExtension, "Ignore objects (functions, views, tables, indexes, triggers, etc.) belonging to PostgreSQL extensions.");
 
             pnlStatusLabels = new FlowLayoutPanel { 
                 Location = new Point(12, 14),
@@ -1533,44 +1538,82 @@ namespace ReleasePrepTool.UI
                 BackColor = Color.Transparent
             };
             
-            pnlActionBar.Controls.AddRange(new Control[] { btnGenerateSchema, btnOpenSchemaFolder, btnEditSchema, chkTuningSchema, chkIncludeOwner, pnlStatusLabels });
+            pnlActionBar.Controls.AddRange(new Control[] { btnGenerateSchema, btnOpenSchemaFolder, btnEditSchema, chkTuningSchema, chkIncludeOwner, chkIgnoreExtension, pnlStatusLabels });
 
             void RepositionActionBar() {
                 if (pnlActionBar.Width == 0) return;
                 
-                int currentX = 12 + 160 + 8; // Start after Gen button
+                int startX = 12 + 160 + 8; // Start after Gen button
                 if (btnOpenSchemaFolder.Visible) {
-                    btnOpenSchemaFolder.Location = new Point(currentX, 12);
-                    currentX += 40 + 8;
+                    startX += 48;
                 }
                 if (btnEditSchema.Visible) {
-                    btnEditSchema.Location = new Point(currentX, 12);
-                    currentX += 40 + 8;
+                    startX += 48;
                 }
                 
-                chkTuningSchema.Location = new Point(currentX, 19);
-                currentX += chkTuningSchema.Width + 16;
+                int totalCheckboxesWidth = chkTuningSchema.Width + 16 + chkIncludeOwner.Width + 16 + chkIgnoreExtension.Width + 16;
+                bool twoRows = (startX + totalCheckboxesWidth + 200 > pnlActionBar.Width);
                 
-                chkIncludeOwner.Location = new Point(currentX, 19);
-                currentX += chkIncludeOwner.Width + 16;
-                
-                currentX += 16; // Margin before badges
-                pnlStatusLabels.Location = new Point(currentX, 14);
-                
-                // Force wrap constraint
-                int availableWidth = Math.Max(50, pnlActionBar.Width - currentX - 12);
-                pnlStatusLabels.Width = availableWidth;
-                
-                // Get strictly wrapped height
-                int prefHeight = pnlStatusLabels.GetPreferredSize(new Size(availableWidth, 0)).Height;
-                int requiredPanelHeight = Math.Max(62, prefHeight + 28);
-                
-                pnlStatusLabels.Height = prefHeight;
-                
-                // Set explicit structural bounds to avoid WinForm's 100px default Panel rendering height bug
-                if (pnlActionBar.Height != requiredPanelHeight) {
-                    pnlActionBar.MinimumSize = new Size(0, requiredPanelHeight);
-                    pnlActionBar.Height = requiredPanelHeight;
+                if (twoRows) {
+                    // Checkboxes go to row 2
+                    chkTuningSchema.Location = new Point(12, 54);
+                    chkIncludeOwner.Location = new Point(12 + chkTuningSchema.Width + 16, 54);
+                    chkIgnoreExtension.Location = new Point(12 + chkTuningSchema.Width + 16 + chkIncludeOwner.Width + 16, 54);
+                    
+                    // Position buttons on row 1
+                    int currentX = 12 + 160 + 8;
+                    if (btnOpenSchemaFolder.Visible) {
+                        btnOpenSchemaFolder.Location = new Point(currentX, 12);
+                        currentX += 48;
+                    }
+                    if (btnEditSchema.Visible) {
+                        btnEditSchema.Location = new Point(currentX, 12);
+                        currentX += 48;
+                    }
+                    
+                    pnlStatusLabels.Location = new Point(currentX + 16, 14);
+                    int availableWidth = Math.Max(100, pnlActionBar.Width - currentX - 16 - 12);
+                    pnlStatusLabels.Width = availableWidth;
+                    
+                    int prefHeight = pnlStatusLabels.GetPreferredSize(new Size(availableWidth, 0)).Height;
+                    int requiredPanelHeight = Math.Max(90, prefHeight + 28);
+                    
+                    pnlStatusLabels.Height = prefHeight;
+                    if (pnlActionBar.Height != requiredPanelHeight) {
+                        pnlActionBar.MinimumSize = new Size(0, requiredPanelHeight);
+                        pnlActionBar.Height = requiredPanelHeight;
+                    }
+                } else {
+                    // All on row 1
+                    int currentX = startX;
+                    if (btnOpenSchemaFolder.Visible) {
+                        btnOpenSchemaFolder.Location = new Point(12 + 160 + 8, 12);
+                    }
+                    if (btnEditSchema.Visible) {
+                        btnEditSchema.Location = new Point(12 + 160 + 8 + (btnOpenSchemaFolder.Visible ? 48 : 0), 12);
+                    }
+                    
+                    chkTuningSchema.Location = new Point(currentX, 19);
+                    currentX += chkTuningSchema.Width + 16;
+                    
+                    chkIncludeOwner.Location = new Point(currentX, 19);
+                    currentX += chkIncludeOwner.Width + 16;
+                    
+                    chkIgnoreExtension.Location = new Point(currentX, 19);
+                    currentX += chkIgnoreExtension.Width + 16;
+                    
+                    pnlStatusLabels.Location = new Point(currentX + 16, 14);
+                    int availableWidth = Math.Max(100, pnlActionBar.Width - currentX - 16 - 12);
+                    pnlStatusLabels.Width = availableWidth;
+                    
+                    int prefHeight = pnlStatusLabels.GetPreferredSize(new Size(availableWidth, 0)).Height;
+                    int requiredPanelHeight = Math.Max(62, prefHeight + 28);
+                    
+                    pnlStatusLabels.Height = prefHeight;
+                    if (pnlActionBar.Height != requiredPanelHeight) {
+                        pnlActionBar.MinimumSize = new Size(0, requiredPanelHeight);
+                        pnlActionBar.Height = requiredPanelHeight;
+                    }
                 }
             }
 
@@ -1669,7 +1712,10 @@ namespace ReleasePrepTool.UI
                 p.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
                 db.Dock = DockStyle.Top; db.DropDownStyle = ComboBoxStyle.DropDownList;
                 schema.Dock = DockStyle.Top; schema.DropDownStyle = ComboBoxStyle.DropDownList;
-                p.Controls.Add(new Label { Text = title + " DB:", Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold), ForeColor = color, TextAlign = ContentAlignment.BottomLeft, AutoSize = true, Dock = DockStyle.Bottom }, 0, 0);
+                var lblDb = new Label { Text = title + " DB:", Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold), ForeColor = color, TextAlign = ContentAlignment.BottomLeft, AutoSize = true, Dock = DockStyle.Bottom };
+                if (title == "SOURCE") lblSourceDataDbTitle = lblDb;
+                else if (title == "TARGET") lblTargetDataDbTitle = lblDb;
+                p.Controls.Add(lblDb, 0, 0);
                 p.Controls.Add(db, 0, 1);
                 p.Controls.Add(new Label { Text = title + " SCHEMA:", Font = new Font(UIConstants.MainFontName, 8.5f, FontStyle.Bold), ForeColor = color, TextAlign = ContentAlignment.BottomLeft, AutoSize = true, Dock = DockStyle.Bottom }, 1, 0);
                 p.Controls.Add(schema, 1, 1);
@@ -1955,7 +2001,16 @@ namespace ReleasePrepTool.UI
             btnVerifySync.FlatAppearance.BorderColor = UIConstants.Primary;
             btnVerifySync.FlatAppearance.BorderSize = 1;
 
-            pnlToolbar.Controls.AddRange(new Control[] { lblStatus, btnExecuteSchema, btnExecuteData, btnVerifySync });
+            chkDryRun = new CheckBox {
+                Text = "Dry Run (Rollback)",
+                AutoSize = true,
+                Margin = new Padding(0, 10, 16, 0),
+                Font = new Font(UIConstants.MainFontName, 9.5f),
+                ForeColor = UIConstants.Danger,
+                Cursor = Cursors.Hand
+            };
+
+            pnlToolbar.Controls.AddRange(new Control[] { lblStatus, chkDryRun, btnExecuteSchema, btnExecuteData, btnVerifySync });
             
             pnlHeader.Controls.Add(pnlIntro);
             pnlHeader.Controls.Add(pnlToolbar);
@@ -2310,6 +2365,7 @@ namespace ReleasePrepTool.UI
             dgvJunkDataResults.ColumnHeaderMouseClick += DgvJunkDataResults_ColumnHeaderMouseClick;
 
             cmbJunkConnection.SelectedIndexChanged += async (s, e) => {
+                if (_suppressComboEvents) return;
                 if (cmbJunkConnection.SelectedIndex == 2) // Custom
                 {
                     using (var dlg = new ConnectionDialog("Custom Database Connection", _customJunkConfig))
@@ -2403,6 +2459,7 @@ namespace ReleasePrepTool.UI
             cardFinal.Controls.Add(clbFinalExportDbs);
 
             cmbFinalExportConnection.SelectedIndexChanged += async (s, e) => {
+                if (_suppressComboEvents) return;
                 if (cmbFinalExportConnection.SelectedIndex == 2) // Custom
                 {
                     using (var dlg = new ConnectionDialog("Custom Database Connection", _customFinalExportConfig))
@@ -3107,7 +3164,8 @@ namespace ReleasePrepTool.UI
             {
                 _oldPgService = new PostgresService(_oldDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
                 _newPgService = new PostgresService(_newDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
-                _dbCompareService = new DatabaseCompareService(_oldDbConfig!, _newDbConfig!);
+                _dbCompareService = new DatabaseCompareService(_newDbConfig!, _oldDbConfig!);
+                if (chkIgnoreExtension != null) _dbCompareService.IgnoreExtension = chkIgnoreExtension.Checked;
                 _fileSystemService = new FileSystemService(txtReleasePath.Text, txtReleaseVersion.Text, txtProductName.Text);
                 var provider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini";
                 var model = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "gemini-2.0-flash" : cmbAiModel.Text.Split(' ')[0];
@@ -3136,7 +3194,8 @@ namespace ReleasePrepTool.UI
             {
                 _oldPgService = new PostgresService(_oldDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
                 _newPgService = new PostgresService(_newDbConfig!) { PostgresBinPath = txtPgBinPath.Text };
-                _dbCompareService = new DatabaseCompareService(_oldDbConfig!, _newDbConfig!);
+                _dbCompareService = new DatabaseCompareService(_newDbConfig!, _oldDbConfig!);
+                if (chkIgnoreExtension != null) _dbCompareService.IgnoreExtension = chkIgnoreExtension.Checked;
                 _fileSystemService = new FileSystemService(txtReleasePath.Text, txtReleaseVersion.Text, txtProductName.Text);
                 var provider = cmbAiProvider.SelectedItem?.ToString() ?? "Gemini";
                 var model = string.IsNullOrWhiteSpace(cmbAiModel.Text) ? "gemini-2.0-flash" : cmbAiModel.Text.Split(' ')[0];
@@ -3943,6 +4002,7 @@ namespace ReleasePrepTool.UI
             if (!EnsureServicesInitialized()) return;
             _dbCompareService = new DatabaseCompareService(_newDbConfig!, _oldDbConfig!); // Passing New then Old
             _dbCompareService.IncludeOwner = chkIncludeOwner.Checked;
+            _dbCompareService.IgnoreExtension = chkIgnoreExtension.Checked;
             treeSchema.Nodes.Clear();
             btnLoadTables.Text = "Loading...";
             btnLoadTables.Enabled = false;
@@ -4074,6 +4134,19 @@ namespace ReleasePrepTool.UI
                     matViewRoot.Nodes.Add(node);
                 }
 
+                tableRoot.Text = $"Tables ({tableRoot.Nodes.Count})";
+                viewRoot.Text = $"Views ({viewRoot.Nodes.Count})";
+                routineRoot.Text = $"Functions ({routineRoot.Nodes.Count})";
+                indexNodeRoot.Text = $"Indexes ({indexNodeRoot.Nodes.Count})";
+                triggerRoot.Text = $"Triggers ({triggerRoot.Nodes.Count})";
+                constraintRoot.Text = $"Constraints ({constraintRoot.Nodes.Count})";
+                extensionRoot.Text = $"Extensions ({extensionRoot.Nodes.Count})";
+                roleRoot.Text = $"Roles ({roleRoot.Nodes.Count})";
+                sequenceRoot.Text = $"Sequences ({sequenceRoot.Nodes.Count})";
+                enumRoot.Text = $"Enums ({enumRoot.Nodes.Count})";
+                typeRoot.Text = $"Types ({typeRoot.Nodes.Count})";
+                matViewRoot.Text = $"Materialized Views ({matViewRoot.Nodes.Count})";
+
                 if (tableRoot.Nodes.Count > 0) treeSchema.Nodes.Add(tableRoot);
                 if (viewRoot.Nodes.Count > 0) treeSchema.Nodes.Add(viewRoot);
                 if (routineRoot.Nodes.Count > 0) treeSchema.Nodes.Add(routineRoot);
@@ -4090,16 +4163,13 @@ namespace ReleasePrepTool.UI
                 tableRoot.Expand();
 
                 pnlStatusLabels.Controls.Clear();
-                AddStatusBadge($"{_schemaDiffs.Count} Differences", UIConstants.Primary);
-
-                var typeCounts = _schemaDiffs.GroupBy(d => d.ObjectType)
-                    .OrderByDescending(g => g.Count())
-                    .ToList();
-
-                foreach (var g in typeCounts)
+                if (_schemaDiffs.Count == 0)
                 {
-                    string label = $"{g.Count()} {g.Key}{(g.Count() > 1 ? (g.Key == "Index" ? "es" : "s") : "")}";
-                    AddStatusBadge(label, UIConstants.TextSecondary);
+                    AddStatusBadge("✅ Identical (No Schema Diffs)", UIConstants.Success);
+                }
+                else
+                {
+                    AddStatusBadge($"{_schemaDiffs.Count} Differences", UIConstants.Primary);
                 }
             }
             catch (Exception ex)
@@ -4138,7 +4208,7 @@ namespace ReleasePrepTool.UI
 
                 foreach (var r in selectedDiffs)
                 {
-                    sb.AppendLine(r.DiffScript);
+                    sb.AppendLine(r.DiffScript.Trim());
                     sb.AppendLine();
                 }
 
@@ -4153,13 +4223,6 @@ namespace ReleasePrepTool.UI
                 _fileSystemService!.UpdateScriptUpdateNote();
                 pnlStatusLabels.Controls.Clear();
                 
-                string fileName = System.IO.Path.GetFileName(path);
-                AddStatusBadge($"{UIConstants.IconCheck}  Exported: {fileName}", UIConstants.Success, () => {
-                    try {
-                        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path.Replace("/", "\\")}\"");
-                    } catch { }
-                });
-
                 AddStatusBadge($"{UIConstants.IconRobot}  Review with AI", UIConstants.Primary, () => {
                     tabControl.SelectedIndex = 8; // Switch to AI Review tab
                 });
@@ -4320,6 +4383,9 @@ namespace ReleasePrepTool.UI
                 var oldDbs = await oldSvc.GetAllDatabasesAsync();
                 var newDbs = await newSvc.GetAllDatabasesAsync();
 
+                lblSourceDataDbTitle.Text = $"SOURCE DB ({_newDbConfig.Host}:{_newDbConfig.Port}):";
+                lblTargetDataDbTitle.Text = $"TARGET DB ({_oldDbConfig.Host}:{_oldDbConfig.Port}):";
+
                 cmbSourceDb.Items.Clear();
                 cmbSourceDb.Items.AddRange(newDbs.ToArray());
                 cmbSourceDataDb.Items.Clear();
@@ -4354,8 +4420,25 @@ namespace ReleasePrepTool.UI
                 if (cmbSourceDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbSourceDataDb.SelectedItem.ToString()!, cmbSourceDataSchema, _newDbConfig);
                 if (cmbTargetDataDb.SelectedItem != null) await LoadSchemaListsAsync(cmbTargetDataDb.SelectedItem.ToString()!, cmbTargetDataSchema, _oldDbConfig);
 
+                // Update cmbJunkConnection items with host/port details
+                cmbJunkConnection.Items.Clear();
+                cmbJunkConnection.Items.Add($"Source (Dev) ({_newDbConfig.Host}:{_newDbConfig.Port})");
+                cmbJunkConnection.Items.Add($"Target (Prod) ({_oldDbConfig.Host}:{_oldDbConfig.Port})");
+                cmbJunkConnection.Items.Add("Custom Connection...");
+                cmbJunkConnection.SelectedIndex = 1; // Default to Target (Prod)
+
+                // Update cmbFinalExportConnection items with host/port details
+                cmbFinalExportConnection.Items.Clear();
+                cmbFinalExportConnection.Items.Add($"Source (Dev) ({_newDbConfig.Host}:{_newDbConfig.Port})");
+                cmbFinalExportConnection.Items.Add($"Target (Prod) ({_oldDbConfig.Host}:{_oldDbConfig.Port})");
+                cmbFinalExportConnection.Items.Add("Custom Connection...");
+                cmbFinalExportConnection.SelectedIndex = 1; // Default to Target (Prod)
+
                 // Load databases for final export
                 await LoadFinalExportDbsAsync();
+
+                // Load junk selection tree
+                await UpdateJunkSelectionTreeAsync(true);
             }
             catch (Exception ex) {
                 pnlStatusLabels.Controls.Clear();
@@ -4491,6 +4574,7 @@ namespace ReleasePrepTool.UI
             {
                 pbDataLoading.Visible = false;
                 this.Cursor = Cursors.Default;
+                Cursor.Current = Cursors.Default;
             }
         }
 
@@ -4549,9 +4633,9 @@ namespace ReleasePrepTool.UI
                     var options = GetDataCompareOptions();
                     var summary = await _dbCompareService!.GetTableDataDiffSummaryAsync(table, sourceSchema, targetSchema, options);
 
-                    row.Cells["ColDiff"].Value = summary.UpdatedCount;
-                    row.Cells["ColSource"].Value = summary.InsertedCount;
-                    row.Cells["ColTarget"].Value = summary.DeletedCount;
+                    row.Cells["ColSource"].Value = summary.SourceRowCount;
+                    row.Cells["ColTarget"].Value = summary.TargetRowCount;
+                    row.Cells["ColDiff"].Value = $"+{summary.InsertedCount} / ~{summary.UpdatedCount} / -{summary.DeletedCount}";
 
                     if (summary.HasDifferences)
                     {
@@ -4583,6 +4667,13 @@ namespace ReleasePrepTool.UI
                 lblDataStatus.ForeColor = diffCount > 0 ? Color.DarkRed : Color.DarkGreen;
                 pbDataLoading.Visible = false;
                 this.Cursor = Cursors.Default;
+                Cursor.Current = Cursors.Default;
+
+                pnlDataStatusLabels.Controls.Clear();
+                if (diffCount == 0)
+                {
+                    AddStatusBadge("✅ Identical (No Data Diffs)", UIConstants.Success, null, pnlDataStatusLabels);
+                }
             }
         }
 
@@ -4630,6 +4721,7 @@ namespace ReleasePrepTool.UI
             {
                 lblDataStatus.Text = "";
                 this.Cursor = Cursors.Default;
+                Cursor.Current = Cursors.Default;
             }
         }
 
@@ -4668,20 +4760,13 @@ namespace ReleasePrepTool.UI
                 _lastDataExportPath = fullPath;
                 
                 pnlDataStatusLabels.Controls.Clear();
-                string fileNameOnly = System.IO.Path.GetFileName(fullPath);
-                
-                AddStatusBadge($"{UIConstants.IconCheck}  Exported: {fileNameOnly}", UIConstants.Success, () => {
-                    if (!string.IsNullOrEmpty(fullPath) && File.Exists(fullPath))
-                        Process.Start("explorer.exe", $"/select,\"{fullPath.Replace("/", "\\")}\"");
-                }, pnlDataStatusLabels);
-
                 AddStatusBadge($"{UIConstants.IconRobot}  Review with AI", UIConstants.Primary, () => {
                     tabControl.SelectedIndex = 8; // Switch to AI Review tab
                 }, pnlDataStatusLabels);
 
                 btnOpenDataFolder.Visible = true;
                 btnEditData.Visible = true;
-                lblDataStatus.Text = $"✅ Exported to {fileNameOnly}";
+                lblDataStatus.Text = $"✅ Exported to {Path.GetFileName(fullPath)}";
 
                 MessageBox.Show($"Data synchronization script generated successfully!\n\nSaved to: {fullPath}\n\nYou can now review the script or proceed with AI Review.", "Generation Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
@@ -4693,6 +4778,7 @@ namespace ReleasePrepTool.UI
             finally
             {
                 this.Cursor = Cursors.Default;
+                Cursor.Current = Cursors.Default;
                 pbDataLoading.Visible = false;
             }
         }
@@ -4764,18 +4850,41 @@ namespace ReleasePrepTool.UI
         {
             if (!EnsureServicesInitialized()) return;
             if (!File.Exists(scriptPath)) { MessageBox.Show($"Script {scriptPath} not found."); return; }
+            
+            string targetDb = _oldDbConfig?.DatabaseName ?? "Unknown";
+            string targetHost = _oldDbConfig?.Host ?? "localhost";
+            int targetPort = _oldDbConfig?.Port ?? 5432;
+            string fileName = Path.GetFileName(scriptPath);
+            bool isDryRun = chkDryRun.Checked;
+            
             try
             {
-                txtExecuteLog.AppendText($"Executing {type} script on old database...\r\n");
+                txtExecuteLog.AppendText($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] >>> Starting {type} synchronization...\r\n");
+                txtExecuteLog.AppendText($"    Target Database : {targetDb} ({targetHost}:{targetPort})\r\n");
+                txtExecuteLog.AppendText($"    Script File     : {fileName}\r\n");
+                txtExecuteLog.AppendText($"    Transaction     : Started{(isDryRun ? " (Dry Run)" : "")}\r\n");
+                
                 var sql = File.ReadAllText(scriptPath);
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 
-                await _oldPgService!.ExecuteSqlWithTransactionAsync(sql);
+                await _oldPgService!.ExecuteSqlWithTransactionAsync(sql, isDryRun);
                 
-                txtExecuteLog.AppendText($"{type} sync executed successfully.\r\n");
+                stopwatch.Stop();
+                if (isDryRun)
+                {
+                    txtExecuteLog.AppendText($"    Transaction     : ROLLED BACK (Dry Run success)\r\n");
+                    txtExecuteLog.AppendText($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] <<< {type} sync dry-run completed successfully (Duration: {stopwatch.Elapsed.TotalSeconds:F2}s).\r\n\r\n");
+                }
+                else
+                {
+                    txtExecuteLog.AppendText($"    Transaction     : Committed successfully\r\n");
+                    txtExecuteLog.AppendText($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] <<< {type} sync executed successfully (Duration: {stopwatch.Elapsed.TotalSeconds:F2}s).\r\n\r\n");
+                }
             }
             catch (Exception ex)
             {
-                txtExecuteLog.AppendText($"Execution failed, transaction rolled back. Error: {ex.Message}\r\n");
+                txtExecuteLog.AppendText($"    Transaction     : ROLLED BACK\r\n");
+                txtExecuteLog.AppendText($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] ❌ Execution failed! Error: {ex.Message}\r\n\r\n");
             }
         }
 
