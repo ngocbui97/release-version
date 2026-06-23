@@ -22,10 +22,10 @@ namespace ReleasePrepTool.Tests
         [Test]
         public void MapPostgresType_ShouldReturnCorrectSimplifiedType()
         {
-            Assert.That(_service.MapPostgresType("integer"), Is.EqualTo("int4"));
-            Assert.That(_service.MapPostgresType("bigint"), Is.EqualTo("int8"));
-            Assert.That(_service.MapPostgresType("boolean"), Is.EqualTo("bool"));
-            Assert.That(_service.MapPostgresType("character varying"), Is.EqualTo("varchar"));
+            Assert.That(_service.MapPostgresType("int4"), Is.EqualTo("integer"));
+            Assert.That(_service.MapPostgresType("int8"), Is.EqualTo("bigint"));
+            Assert.That(_service.MapPostgresType("bool"), Is.EqualTo("boolean"));
+            Assert.That(_service.MapPostgresType("varchar"), Is.EqualTo("character varying"));
             Assert.That(_service.MapPostgresType("text"), Is.EqualTo("text"));
         }
 

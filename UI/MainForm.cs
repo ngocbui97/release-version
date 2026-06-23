@@ -1726,7 +1726,7 @@ namespace ReleasePrepTool.UI
                 schema.LostFocus += (s, e) => { schema.BackColor = Color.White; };
             }
 
-            cmbSourceDataDb = new ComboBox(); cmbSourceDataSchema = new ComboBox();
+            cmbSourceDataDb = new ComboBox { Name = "cmbSourceDataDb" }; cmbSourceDataSchema = new ComboBox { Name = "cmbSourceDataSchema" };
             AddDataSelectionPanel(pnlDataGrid, "SOURCE", cmbSourceDataDb, cmbSourceDataSchema, UIConstants.Primary, 0);
 
             var pnlArrow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
@@ -1744,7 +1744,7 @@ namespace ReleasePrepTool.UI
             pnlArrow.Controls.Add(lblArrow, 0, 1);
             pnlDataGrid.Controls.Add(pnlArrow, 1, 0);
 
-            cmbTargetDataDb = new ComboBox(); cmbTargetDataSchema = new ComboBox();
+            cmbTargetDataDb = new ComboBox { Name = "cmbTargetDataDb" }; cmbTargetDataSchema = new ComboBox { Name = "cmbTargetDataSchema" };
             AddDataSelectionPanel(pnlDataGrid, "TARGET", cmbTargetDataDb, cmbTargetDataSchema, UIConstants.Primary, 2);
 
             cardDataSelection.Controls.Add(pnlDataGrid);

@@ -90,12 +90,10 @@ namespace ReleasePrepTool.Tests
             var grid = window.FindFirstDescendant(cf => cf.ByAutomationId("dgvTableDiffs"))?.AsDataGridView();
             Assert.That(grid, Is.Not.Null, "DataGrid should be present");
 
-            // Verify expected columns (names based on MainForm.cs:269-274)
-            // Note: FlaUI might see Header names or AutomationIds
             var columnHeaders = grid.Header.Columns.Select(c => c.Name).ToList();
-            Assert.That(columnHeaders, Contains.Item("Table Name"), "Grid should have 'Table Name' column");
-            Assert.That(columnHeaders, Contains.Item("Different"), "Grid should have 'Different' column");
-            Assert.That(columnHeaders, Contains.Item("Identical"), "Grid should have 'Identical' column");
+            Assert.That(columnHeaders, Contains.Item("TABLE NAME"), "Grid should have 'TABLE NAME' column");
+            Assert.That(columnHeaders, Contains.Item("CHANGES"), "Grid should have 'CHANGES' column");
+            Assert.That(columnHeaders, Contains.Item("STATUS"), "Grid should have 'STATUS' column");
         }
     }
 }

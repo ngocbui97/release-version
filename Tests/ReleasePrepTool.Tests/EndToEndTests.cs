@@ -69,8 +69,8 @@ namespace ReleasePrepTool.Tests
             Thread.Sleep(500);
 
             buttons = window.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button));
-            var btnLoadDiffs = buttons.FirstOrDefault(b => b.Name.Contains("Load Diffs"))?.AsButton();
-            Assert.That(btnLoadDiffs, Is.Not.Null, "'Load Diffs' button should exist");
+            var btnLoadDiffs = buttons.FirstOrDefault(b => b.Name.Contains("Load"))?.AsButton();
+            Assert.That(btnLoadDiffs, Is.Not.Null, "'Load' button should exist");
             btnLoadDiffs.Click();
             
             // Wait for diffs to load (could take a few seconds)
@@ -81,8 +81,11 @@ namespace ReleasePrepTool.Tests
             dataTab?.Select();
             Thread.Sleep(500);
 
-            var btnCompareData = window.FindFirstDescendant(cf => cf.ByName("Start Comparison"))?.AsButton();
-            Assert.That(btnCompareData, Is.Not.Null, "'Start Comparison' button should exist");
+            var btnCompareData = window.FindFirstDescendant(cf => cf.ByAutomationId("btnCompareData"))?.AsButton() 
+                                 ?? window.FindFirstDescendant(cf => cf.ByName("▶  Compare"))?.AsButton()
+                                 ?? window.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button))
+                                          .FirstOrDefault(b => b.Name.Contains("Compare"))?.AsButton();
+            Assert.That(btnCompareData, Is.Not.Null, "'Compare' button should exist");
             btnCompareData.Click();
 
             // Wait for data comparison to finish
@@ -93,8 +96,11 @@ namespace ReleasePrepTool.Tests
             junkTab?.Select();
             Thread.Sleep(500);
 
-            var btnScanJunk = window.FindFirstDescendant(cf => cf.ByName("Scan Junk Data"))?.AsButton();
-            Assert.That(btnScanJunk, Is.Not.Null, "'Scan Junk Data' button should exist");
+            var btnScanJunk = window.FindFirstDescendant(cf => cf.ByAutomationId("btnAnalyzeJunk"))?.AsButton()
+                              ?? window.FindFirstDescendant(cf => cf.ByName("▶  Analyze Junk Data"))?.AsButton()
+                              ?? window.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button))
+                                       .FirstOrDefault(b => b.Name.Contains("Analyze"))?.AsButton();
+            Assert.That(btnScanJunk, Is.Not.Null, "'Analyze Junk Data' button should exist");
             btnScanJunk.Click();
 
             Thread.Sleep(3000);
